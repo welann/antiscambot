@@ -1,6 +1,13 @@
 node_modules/
 .alma-snapshots/
+
 .env
-*.js.*
+.env.*
+!.env.example
+
 *.js
-*.d.*
+*.js.map
+*.d.ts
+*.d.ts.map
+
+*.txt

@@ -11,17 +11,30 @@ if (!BOT_TOKEN) {
 }
 
 const KEYWORDS_FILE = process.env.KEYWORDS_FILE ?? "./keywords.txt";
+const ADMINS_FILE = process.env.ADMINS_FILE ?? "./admins.txt";
 
 type KeywordEntry = { canonical: string; raw: string };
 
 const keywordMap = new Map<string, string>(); // canonical -> raw
 let keywordEntries: KeywordEntry[] = [];
 
+const persistedAdminIds = new Set<number>();
+
 let keywordFileQueue: Promise<unknown> = Promise.resolve();
+let adminFileQueue: Promise<unknown> = Promise.resolve();
 
 function queueKeywordFileOp<T>(op: () => Promise<T>): Promise<T> {
   const next = keywordFileQueue.then(op, op);
   keywordFileQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+function queueAdminFileOp<T>(op: () => Promise<T>): Promise<T> {
+  const next = adminFileQueue.then(op, op);
+  adminFileQueue = next.then(
     () => undefined,
     () => undefined,
   );
@@ -72,6 +85,35 @@ async function loadKeywordsFromDisk(): Promise<void> {
   }
 
   rebuildKeywordEntries();
+}
+
+async function ensureAdminsFile(): Promise<void> {
+  try {
+    await readFile(ADMINS_FILE, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw err;
+
+    await mkdir(dirname(ADMINS_FILE), { recursive: true });
+    await writeFile(ADMINS_FILE, "", "utf8");
+  }
+}
+
+async function loadAdminsFromDisk(): Promise<void> {
+  await ensureAdminsFile();
+
+  const contents = await readFile(ADMINS_FILE, "utf8");
+  persistedAdminIds.clear();
+
+  for (const line of contents.split(/\r?\n/)) {
+    const raw = line.trim();
+    if (!raw) continue;
+
+    const userId = Number(raw);
+    if (!Number.isInteger(userId) || userId <= 0) continue;
+
+    persistedAdminIds.add(userId);
+  }
 }
 
 async function addKeywordFromUserInput(
@@ -153,7 +195,7 @@ const KEYWORD_ADMIN_IDS = new Set<number>(
 );
 
 function isGlobalKeywordAdmin(userId: number): boolean {
-  return KEYWORD_ADMIN_IDS.has(userId);
+  return KEYWORD_ADMIN_IDS.has(userId) || persistedAdminIds.has(userId);
 }
 
 async function canManageKeywords(ctx: Context): Promise<boolean> {
@@ -171,25 +213,53 @@ async function canManageKeywords(ctx: Context): Promise<boolean> {
   }
 }
 
+function hasAnyGlobalAdmins(): boolean {
+  return KEYWORD_ADMIN_IDS.size > 0 || persistedAdminIds.size > 0;
+}
+
+async function bootstrapFirstAdminIfNeeded(userId: number): Promise<boolean> {
+  if (hasAnyGlobalAdmins()) return false;
+
+  return queueAdminFileOp(async () => {
+    if (hasAnyGlobalAdmins()) return false;
+
+    await ensureAdminsFile();
+    await appendFile(ADMINS_FILE, String(userId) + "\n", "utf8");
+    persistedAdminIds.add(userId);
+
+    return true;
+  });
+}
+
 const bot = new Bot(BOT_TOKEN);
 let BOT_ID: number | null = null;
 
-bot.command("start", (ctx) => {
-  ctx.reply(
-    [
-      "Anti-scam bot is running.",
-      "\nCommands:",
-      "- /addkw <keyword>  添加待检测关键字 (管理员)",
-      "- /delkw <keyword>  删除关键字 (管理员)",
-      "- /keywords         查看所有关键字",
-    ].join("\n"),
-  );
+bot.command("start", async (ctx) => {
+  const becameAdmin = ctx.from
+    ? await bootstrapFirstAdminIfNeeded(ctx.from.id)
+    : false;
+
+  const lines = [
+    "Anti-scam bot is running.",
+    "\nCommands:",
+    "- /addkw <keyword>  添加待检测关键字 (管理员)",
+    "- /delkw <keyword>  删除关键字 (管理员)",
+    "- /keywords         查看所有关键字",
+  ];
+
+  if (becameAdmin) {
+    lines.unshift(
+      "已初始化管理员：你是第一个使用 /start 的用户，已记录为全局管理员。",
+    );
+  }
+
+  return ctx.reply(lines.join("\n"));
 });
 
 bot.command("addkw", async (ctx) => {
   if (!(await canManageKeywords(ctx))) {
     return ctx.reply(
-      "无权限：仅群管理员可操作（或在私聊中设置 KEYWORD_ADMIN_IDS=123,456 作为全局管理员）。",
+      "无权限：仅群管理员可操作（或设置 KEYWORD_ADMIN_IDS=123,456；首次运行可用 /start 初始化全局管理员）。",
     );
   }
 
@@ -210,7 +280,7 @@ bot.command("addkw", async (ctx) => {
 bot.command("delkw", async (ctx) => {
   if (!(await canManageKeywords(ctx))) {
     return ctx.reply(
-      "无权限：仅群管理员可操作（或在私聊中设置 KEYWORD_ADMIN_IDS=123,456 作为全局管理员）。",
+      "无权限：仅群管理员可操作（或设置 KEYWORD_ADMIN_IDS=123,456；首次运行可用 /start 初始化全局管理员）。",
     );
   }
 
@@ -281,6 +351,7 @@ bot.on("message", async (ctx) => {
 
 async function main(): Promise<void> {
   await loadKeywordsFromDisk();
+  await loadAdminsFromDisk();
   const me = await bot.api.getMe();
   BOT_ID = me.id;
   bot.start();
