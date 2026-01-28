@@ -1,2 +1,6 @@
 node_modules/
 .alma-snapshots/
+.env
+*.js.*
+*.js
+*.d.*

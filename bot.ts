@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Bot, Context } from "grammy";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -75,7 +76,7 @@ async function loadKeywordsFromDisk(): Promise<void> {
 
 async function addKeywordFromUserInput(
   input: string,
-): Promise<{ added: boolean; keyword?: string; reason?: "empty" | "exists" }> {
+): Promise<{ added: boolean; keyword?: string | undefined; reason?: "empty" | "exists" }> {
   const raw = normalizeKeyword(input);
   if (!raw) return { added: false, reason: "empty" };
 

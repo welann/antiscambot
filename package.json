@@ -1,9 +1,11 @@
 {
+	"type": "module",
 	"devDependencies": {
 		"@types/node": "^22.0.0",
 		"typescript": "^5.9.3"
 	},
 	"dependencies": {
+		"dotenv": "^17.2.3",
 		"grammy": "^1.39.3"
 	}
 }
