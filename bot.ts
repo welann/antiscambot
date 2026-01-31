@@ -185,6 +185,66 @@ function truncateForNotice(text: string, maxLen: number): string {
   return compact.slice(0, maxLen) + "…";
 }
 
+type MatchCandidateSource = "text" | "caption" | "button_text" | "button_url";
+type MatchCandidate = { source: MatchCandidateSource; value: string };
+
+function getMessageMatchCandidates(message: {
+  text?: string | undefined;
+  caption?: string | undefined;
+  reply_markup?: { inline_keyboard?: unknown } | undefined;
+}): MatchCandidate[] {
+  const candidates: MatchCandidate[] = [];
+  const seen = new Set<string>();
+
+  const push = (source: MatchCandidateSource, value: unknown): void => {
+    if (typeof value !== "string") return;
+    const normalized = value.trim();
+    if (!normalized) return;
+
+    const key = `${source}:${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    candidates.push({ source, value: normalized });
+  };
+
+  push("text", message.text);
+  push("caption", message.caption);
+
+  const inlineKeyboard = message.reply_markup?.inline_keyboard;
+  if (Array.isArray(inlineKeyboard)) {
+    for (const row of inlineKeyboard) {
+      if (!Array.isArray(row)) continue;
+      for (const button of row) {
+        if (!button || typeof button !== "object") continue;
+        const btn = button as Record<string, unknown>;
+
+        push("button_text", btn.text);
+        push("button_url", btn.url);
+        push("button_url", (btn.login_url as { url?: unknown } | undefined)?.url);
+        push("button_url", (btn.web_app as { url?: unknown } | undefined)?.url);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function formatMatchSource(source: MatchCandidateSource): string {
+  switch (source) {
+    case "text":
+      return "消息文本";
+    case "caption":
+      return "媒体描述";
+    case "button_text":
+      return "按钮文字";
+    case "button_url":
+      return "按钮链接";
+    default:
+      return "未知";
+  }
+}
+
 const KEYWORD_ADMIN_IDS = new Set<number>(
   (process.env.KEYWORD_ADMIN_IDS ?? "")
     .split(",")
@@ -308,16 +368,25 @@ bot.on("message", async (ctx) => {
   if (!ctx.chat || !ctx.message) return;
   if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
 
-  const text = ctx.message.text ?? ctx.message.caption;
-  if (!text) return;
-
   const isCommand =
-    !!ctx.message.entities?.some((e) => e.type === "bot_command" && e.offset === 0) &&
-    ctx.message.text === text;
+    !!ctx.message.text &&
+    !!ctx.message.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
   if (isCommand) return;
 
-  const matched = findMatchedKeyword(text);
-  if (!matched) return;
+  const candidates = getMessageMatchCandidates(ctx.message);
+  if (!candidates.length) return;
+
+  let match: { keyword: string; source: MatchCandidateSource; value: string } | null =
+    null;
+
+  for (const candidate of candidates) {
+    const keyword = findMatchedKeyword(candidate.value);
+    if (!keyword) continue;
+    match = { keyword, source: candidate.source, value: candidate.value };
+    break;
+  }
+
+  if (!match) return;
 
   const offender = ctx.from?.username
     ? `@${ctx.from.username}`
@@ -327,25 +396,48 @@ bot.on("message", async (ctx) => {
 
   try {
     await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id);
-    await ctx.api.sendMessage(
-      ctx.chat.id,
-      [
-        `已删除一条消息（命中关键字：${matched}）`,
-        `发送者：${offender}`,
-        `内容：${truncateForNotice(text, 120)}`,
-      ].join("\n"),
+    const noticeLines = [
+      `已删除一条消息（命中关键字：${match.keyword}）`,
+      `发送者：${offender}`,
+    ];
+
+    const messagePreview = ctx.message.text ?? ctx.message.caption;
+    if (
+      messagePreview &&
+      (match.source === "button_text" || match.source === "button_url")
+    ) {
+      noticeLines.push(`消息：${truncateForNotice(messagePreview, 120)}`);
+    }
+
+    noticeLines.push(
+      `命中位置：${formatMatchSource(match.source)}`,
+      `匹配内容：${truncateForNotice(match.value, 120)}`,
     );
+
+    await ctx.api.sendMessage(ctx.chat.id, noticeLines.join("\n"));
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    await ctx.api.sendMessage(
-      ctx.chat.id,
-      [
-        `检测到关键字命中（${matched}），但删除失败。`,
-        "请确认机器人在群里拥有“删除消息”的管理员权限。",
-        `发送者：${offender}`,
-        `错误：${reason}`,
-      ].join("\n"),
+    const alertLines = [
+      `检测到关键字命中（${match.keyword}），但删除失败。`,
+      `发送者：${offender}`,
+    ];
+
+    const messagePreview = ctx.message.text ?? ctx.message.caption;
+    if (
+      messagePreview &&
+      (match.source === "button_text" || match.source === "button_url")
+    ) {
+      alertLines.push(`消息：${truncateForNotice(messagePreview, 120)}`);
+    }
+
+    alertLines.push(
+      `命中位置：${formatMatchSource(match.source)}`,
+      `匹配内容：${truncateForNotice(match.value, 120)}`,
+      "请确认机器人在群里拥有“删除消息”的管理员权限。",
+      `错误：${reason}`,
     );
+
+    await ctx.api.sendMessage(ctx.chat.id, alertLines.join("\n"));
   }
 });
 
