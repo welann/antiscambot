@@ -179,50 +179,49 @@ function findMatchedKeyword(text: string): string | null {
   return null;
 }
 
-function truncateForNotice(text: string, maxLen: number): string {
-  const compact = text.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxLen) return compact;
-  return compact.slice(0, maxLen) + "…";
-}
+type MessageMatchSource = "text" | "caption" | "button_text" | "button_url";
 
-type MatchCandidateSource = "text" | "caption" | "button_text" | "button_url";
-type MatchCandidate = { source: MatchCandidateSource; value: string };
+type ScanCandidate = { source: MessageMatchSource; value: string };
 
-function getMessageMatchCandidates(message: {
-  text?: string | undefined;
-  caption?: string | undefined;
-  reply_markup?: { inline_keyboard?: unknown } | undefined;
-}): MatchCandidate[] {
-  const candidates: MatchCandidate[] = [];
-  const seen = new Set<string>();
+type InlineKeyboardButtonLike = {
+  text: string;
+  url?: string;
+  web_app?: { url?: string };
+  login_url?: { url?: string };
+};
 
-  const push = (source: MatchCandidateSource, value: unknown): void => {
-    if (typeof value !== "string") return;
-    const normalized = value.trim();
-    if (!normalized) return;
+function collectMessageScanCandidates(message: {
+  text?: string;
+  caption?: string;
+  reply_markup?: { inline_keyboard?: InlineKeyboardButtonLike[][] };
+}): ScanCandidate[] {
+  const candidates: ScanCandidate[] = [];
 
-    const key = `${source}:${normalized}`;
-    if (seen.has(key)) return;
-    seen.add(key);
+  if (typeof message.text === "string" && message.text.trim()) {
+    candidates.push({ source: "text", value: message.text });
+  }
 
-    candidates.push({ source, value: normalized });
-  };
+  if (typeof message.caption === "string" && message.caption.trim()) {
+    candidates.push({ source: "caption", value: message.caption });
+  }
 
-  push("text", message.text);
-  push("caption", message.caption);
-
-  const inlineKeyboard = message.reply_markup?.inline_keyboard;
-  if (Array.isArray(inlineKeyboard)) {
-    for (const row of inlineKeyboard) {
+  const keyboard = message.reply_markup?.inline_keyboard;
+  if (Array.isArray(keyboard)) {
+    for (const row of keyboard) {
       if (!Array.isArray(row)) continue;
-      for (const button of row) {
-        if (!button || typeof button !== "object") continue;
-        const btn = button as Record<string, unknown>;
 
-        push("button_text", btn.text);
-        push("button_url", btn.url);
-        push("button_url", (btn.login_url as { url?: unknown } | undefined)?.url);
-        push("button_url", (btn.web_app as { url?: unknown } | undefined)?.url);
+      for (const button of row) {
+        if (!button || typeof button.text !== "string") continue;
+
+        const buttonText = button.text.trim();
+        if (buttonText) {
+          candidates.push({ source: "button_text", value: buttonText });
+        }
+
+        const buttonUrl = button.url ?? button.web_app?.url ?? button.login_url?.url;
+        if (typeof buttonUrl === "string" && buttonUrl.trim()) {
+          candidates.push({ source: "button_url", value: buttonUrl.trim() });
+        }
       }
     }
   }
@@ -230,19 +229,66 @@ function getMessageMatchCandidates(message: {
   return candidates;
 }
 
-function formatMatchSource(source: MatchCandidateSource): string {
+function findMatchedKeywordInCandidates(
+  candidates: ScanCandidate[],
+): { keyword: string; source: MessageMatchSource; value: string } | null {
+  for (const candidate of candidates) {
+    const matched = findMatchedKeyword(candidate.value);
+    if (matched) {
+      return { keyword: matched, source: candidate.source, value: candidate.value };
+    }
+  }
+
+  return null;
+}
+
+function describeMatchSource(source: MessageMatchSource): string {
   switch (source) {
     case "text":
       return "消息文本";
     case "caption":
-      return "媒体描述";
+      return "媒体说明";
     case "button_text":
       return "按钮文字";
     case "button_url":
       return "按钮链接";
-    default:
-      return "未知";
   }
+}
+
+function buildMessagePreview(message: {
+  text?: string;
+  caption?: string;
+  reply_markup?: { inline_keyboard?: InlineKeyboardButtonLike[][] };
+}): string {
+  if (typeof message.text === "string" && message.text.trim()) return message.text;
+  if (typeof message.caption === "string" && message.caption.trim()) return message.caption;
+
+  const keyboard = message.reply_markup?.inline_keyboard;
+  if (!Array.isArray(keyboard)) return "";
+
+  const entries: string[] = [];
+  for (const row of keyboard) {
+    if (!Array.isArray(row)) continue;
+
+    for (const button of row) {
+      if (!button || typeof button.text !== "string") continue;
+
+      const url = button.url ?? button.web_app?.url ?? button.login_url?.url;
+      if (typeof url === "string" && url.trim()) {
+        entries.push(`${button.text} -> ${url.trim()}`);
+      } else {
+        entries.push(button.text);
+      }
+    }
+  }
+
+  return entries.join(" | ");
+}
+
+function truncateForNotice(text: string, maxLen: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLen) return compact;
+  return compact.slice(0, maxLen) + "…";
 }
 
 const KEYWORD_ADMIN_IDS = new Set<number>(
@@ -369,23 +415,14 @@ bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
 
   const isCommand =
-    !!ctx.message.text &&
+    typeof ctx.message.text === "string" &&
     !!ctx.message.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
   if (isCommand) return;
 
-  const candidates = getMessageMatchCandidates(ctx.message);
+  const candidates = collectMessageScanCandidates(ctx.message);
   if (!candidates.length) return;
 
-  let match: { keyword: string; source: MatchCandidateSource; value: string } | null =
-    null;
-
-  for (const candidate of candidates) {
-    const keyword = findMatchedKeyword(candidate.value);
-    if (!keyword) continue;
-    match = { keyword, source: candidate.source, value: candidate.value };
-    break;
-  }
-
+  const match = findMatchedKeywordInCandidates(candidates);
   if (!match) return;
 
   const offender = ctx.from?.username
@@ -394,50 +431,37 @@ bot.on("message", async (ctx) => {
       ? `user:${ctx.from.id}`
       : "unknown";
 
+  const preview = buildMessagePreview(ctx.message);
+
+  const successLines = [
+    `已删除一条消息（命中关键字：${match.keyword}）`,
+    `发送者：${offender}`,
+    `命中位置：${describeMatchSource(match.source)}`,
+    `命中内容：${truncateForNotice(match.value, 120)}`,
+  ];
+  if (preview && preview !== match.value) {
+    successLines.push(`消息预览：${truncateForNotice(preview, 120)}`);
+  }
+
   try {
     await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id);
-    const noticeLines = [
-      `已删除一条消息（命中关键字：${match.keyword}）`,
-      `发送者：${offender}`,
-    ];
-
-    const messagePreview = ctx.message.text ?? ctx.message.caption;
-    if (
-      messagePreview &&
-      (match.source === "button_text" || match.source === "button_url")
-    ) {
-      noticeLines.push(`消息：${truncateForNotice(messagePreview, 120)}`);
-    }
-
-    noticeLines.push(
-      `命中位置：${formatMatchSource(match.source)}`,
-      `匹配内容：${truncateForNotice(match.value, 120)}`,
-    );
-
-    await ctx.api.sendMessage(ctx.chat.id, noticeLines.join("\n"));
+    await ctx.api.sendMessage(ctx.chat.id, successLines.join("\n"));
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    const alertLines = [
-      `检测到关键字命中（${match.keyword}），但删除失败。`,
-      `发送者：${offender}`,
-    ];
 
-    const messagePreview = ctx.message.text ?? ctx.message.caption;
-    if (
-      messagePreview &&
-      (match.source === "button_text" || match.source === "button_url")
-    ) {
-      alertLines.push(`消息：${truncateForNotice(messagePreview, 120)}`);
+    const failureLines = [
+      `检测到关键字命中（${match.keyword}），但删除失败。`,
+      "请确认机器人在群里拥有“删除消息”的管理员权限。",
+      `发送者：${offender}`,
+      `命中位置：${describeMatchSource(match.source)}`,
+      `命中内容：${truncateForNotice(match.value, 120)}`,
+      `错误：${reason}`,
+    ];
+    if (preview && preview !== match.value) {
+      failureLines.splice(5, 0, `消息预览：${truncateForNotice(preview, 120)}`);
     }
 
-    alertLines.push(
-      `命中位置：${formatMatchSource(match.source)}`,
-      `匹配内容：${truncateForNotice(match.value, 120)}`,
-      "请确认机器人在群里拥有“删除消息”的管理员权限。",
-      `错误：${reason}`,
-    );
-
-    await ctx.api.sendMessage(ctx.chat.id, alertLines.join("\n"));
+    await ctx.api.sendMessage(ctx.chat.id, failureLines.join("\n"));
   }
 });
 
