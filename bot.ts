@@ -13,7 +13,35 @@ if (!BOT_TOKEN) {
 const KEYWORDS_FILE = process.env.KEYWORDS_FILE ?? "./keywords.txt";
 const ADMINS_FILE = process.env.ADMINS_FILE ?? "./admins.txt";
 
+type ReleaseNote = { version: string; summary: string };
+
 type KeywordEntry = { canonical: string; raw: string };
+
+const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-02-01",
+    summary: "新增 inline keyboard 按钮文字/链接关键字检测",
+  },
+  {
+    version: "2026-01-28",
+    summary: "首次运行可用 /start 初始化全局管理员（admins.txt）",
+  },
+  {
+    version: "2026-01-27",
+    summary: "关键词管理（keywords.txt）+ 群消息命中删除提示",
+  },
+];
+
+const LOGIC_VERSION = RELEASE_NOTES[0]?.version ?? "unknown";
+
+function formatReleaseNotesForStart(maxItems = 10): string[] {
+  if (!RELEASE_NOTES.length) return [];
+
+  return [
+    "更新记录：",
+    ...RELEASE_NOTES.slice(0, maxItems).map((note) => `- ${note.version}: ${note.summary}`),
+  ];
+}
 
 const keywordMap = new Map<string, string>(); // canonical -> raw
 let keywordEntries: KeywordEntry[] = [];
@@ -345,19 +373,29 @@ bot.command("start", async (ctx) => {
     ? await bootstrapFirstAdminIfNeeded(ctx.from.id)
     : false;
 
-  const lines = [
-    "Anti-scam bot is running.",
-    "\nCommands:",
+  const lines: string[] = [];
+
+  if (becameAdmin) {
+    lines.push(
+      "已初始化管理员：你是第一个使用 /start 的用户，已记录为全局管理员。",
+      "",
+    );
+  }
+
+  lines.push("Anti-scam bot is running.", `版本：${LOGIC_VERSION}`);
+
+  const releaseNotes = formatReleaseNotesForStart();
+  if (releaseNotes.length) {
+    lines.push("", ...releaseNotes);
+  }
+
+  lines.push(
+    "",
+    "Commands:",
     "- /addkw <keyword>  添加待检测关键字 (管理员)",
     "- /delkw <keyword>  删除关键字 (管理员)",
     "- /keywords         查看所有关键字",
-  ];
-
-  if (becameAdmin) {
-    lines.unshift(
-      "已初始化管理员：你是第一个使用 /start 的用户，已记录为全局管理员。",
-    );
-  }
+  );
 
   return ctx.reply(lines.join("\n"));
 });
