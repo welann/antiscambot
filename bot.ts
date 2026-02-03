@@ -218,6 +218,19 @@ type InlineKeyboardButtonLike = {
   login_url?: { url?: string };
 };
 
+function decodeUnicodeEscapes(str: string): string {
+  // 解码 Unicode 转义序列 (\uXXXX 或 \u{XXXXXX})
+  // 如果字符串已经解码，则直接返回
+  if (!str.includes("\\u")) return str;
+  
+  try {
+    // 将字符串包装成 JSON 字符串格式进行解析
+    return JSON.parse(`"${str.replace(/"/g, '\\"')}"`);
+  } catch {
+    return str;
+  }
+}
+
 function collectMessageScanCandidates(message: {
   text?: string;
   caption?: string;
@@ -241,7 +254,8 @@ function collectMessageScanCandidates(message: {
       for (const button of row) {
         if (!button || typeof button.text !== "string") continue;
 
-        const buttonText = button.text.trim();
+        // 解码 Unicode 转义序列后再进行匹配
+        const buttonText = decodeUnicodeEscapes(button.text).trim();
         if (buttonText) {
           candidates.push({ source: "button_text", value: buttonText });
         }
