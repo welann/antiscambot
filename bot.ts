@@ -19,6 +19,10 @@ type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "2026-02-05",
+    summary: "新增 edited_message 检测：编辑后命中关键字也会删除",
+  },
+  {
     version: "2026-02-01",
     summary: "新增 inline keyboard 按钮文字/链接关键字检测",
   },
@@ -503,6 +507,62 @@ bot.on("message", async (ctx) => {
 
     const failureLines = [
       `检测到关键字命中（${match.keyword}），但删除失败。`,
+      "请确认机器人在群里拥有“删除消息”的管理员权限。",
+      `发送者：${offender}`,
+      `命中位置：${describeMatchSource(match.source)}`,
+      `命中内容：${truncateForNotice(match.value, 120)}`,
+      `错误：${reason}`,
+    ];
+    if (preview && preview !== match.value) {
+      failureLines.splice(5, 0, `消息预览：${truncateForNotice(preview, 120)}`);
+    }
+
+    await ctx.api.sendMessage(ctx.chat.id, failureLines.join("\n"));
+  }
+});
+
+bot.on("edited_message", async (ctx) => {
+  if (BOT_ID !== null && ctx.from?.id === BOT_ID) return;
+  if (!ctx.chat || !ctx.editedMessage) return;
+  if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
+
+  const isCommand =
+    typeof ctx.editedMessage.text === "string" &&
+    !!ctx.editedMessage.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
+  if (isCommand) return;
+
+  const candidates = collectMessageScanCandidates(ctx.editedMessage);
+  if (!candidates.length) return;
+
+  const match = findMatchedKeywordInCandidates(candidates);
+  if (!match) return;
+
+  const offender = ctx.from?.username
+    ? `@${ctx.from.username}`
+    : ctx.from?.id
+      ? `user:${ctx.from.id}`
+      : "unknown";
+
+  const preview = buildMessagePreview(ctx.editedMessage);
+
+  const successLines = [
+    `已删除一条消息（编辑后命中关键字：${match.keyword}）`,
+    `发送者：${offender}`,
+    `命中位置：${describeMatchSource(match.source)}`,
+    `命中内容：${truncateForNotice(match.value, 120)}`,
+  ];
+  if (preview && preview !== match.value) {
+    successLines.push(`消息预览：${truncateForNotice(preview, 120)}`);
+  }
+
+  try {
+    await ctx.api.deleteMessage(ctx.chat.id, ctx.editedMessage.message_id);
+    await ctx.api.sendMessage(ctx.chat.id, successLines.join("\n"));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+
+    const failureLines = [
+      `检测到编辑后的消息命中关键字（${match.keyword}），但删除失败。`,
       "请确认机器人在群里拥有“删除消息”的管理员权限。",
       `发送者：${offender}`,
       `命中位置：${describeMatchSource(match.source)}`,
