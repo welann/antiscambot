@@ -19,6 +19,10 @@ type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "2026-02-28",
+    summary: "新增发送者用户名关键字检测",
+  },
+  {
     version: "2026-02-05",
     summary: "新增 edited_message 检测：编辑后命中关键字也会删除",
   },
@@ -211,7 +215,7 @@ function findMatchedKeyword(text: string): string | null {
   return null;
 }
 
-type MessageMatchSource = "text" | "caption" | "button_text" | "button_url";
+type MessageMatchSource = "text" | "caption" | "button_text" | "button_url" | "username";
 
 type ScanCandidate = { source: MessageMatchSource; value: string };
 
@@ -239,8 +243,15 @@ function collectMessageScanCandidates(message: {
   text?: string;
   caption?: string;
   reply_markup?: { inline_keyboard?: InlineKeyboardButtonLike[][] };
-}): ScanCandidate[] {
+}, senderUsername?: string): ScanCandidate[] {
   const candidates: ScanCandidate[] = [];
+
+  const normalizedUsername =
+    typeof senderUsername === "string" ? senderUsername.trim() : "";
+  if (normalizedUsername) {
+    candidates.push({ source: "username", value: normalizedUsername });
+    candidates.push({ source: "username", value: `@${normalizedUsername}` });
+  }
 
   if (typeof message.text === "string" && message.text.trim()) {
     candidates.push({ source: "text", value: message.text });
@@ -298,6 +309,8 @@ function describeMatchSource(source: MessageMatchSource): string {
       return "按钮文字";
     case "button_url":
       return "按钮链接";
+    case "username":
+      return "发送者用户名";
   }
 }
 
@@ -475,7 +488,7 @@ bot.on("message", async (ctx) => {
     !!ctx.message.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
   if (isCommand) return;
 
-  const candidates = collectMessageScanCandidates(ctx.message);
+  const candidates = collectMessageScanCandidates(ctx.message, ctx.from?.username);
   if (!candidates.length) return;
 
   const match = findMatchedKeywordInCandidates(candidates);
@@ -531,7 +544,7 @@ bot.on("edited_message", async (ctx) => {
     !!ctx.editedMessage.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
   if (isCommand) return;
 
-  const candidates = collectMessageScanCandidates(ctx.editedMessage);
+  const candidates = collectMessageScanCandidates(ctx.editedMessage, ctx.from?.username);
   if (!candidates.length) return;
 
   const match = findMatchedKeywordInCandidates(candidates);

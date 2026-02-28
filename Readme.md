@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。支持检测消息文本、媒体说明、内联键盘按钮文字及链接。
+这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。支持检测消息文本、媒体说明、内联键盘按钮文字及链接，以及发送者用户名。
 
 ## 核心功能
 
@@ -12,6 +12,7 @@
   - 媒体说明/标题 (`caption`)
   - 内联键盘按钮文字 (`button_text`)
   - 内联键盘按钮链接 (`button_url`)
+  - 发送者用户名 (`username`)
 - **匹配规则**：不区分大小写，支持部分匹配
 - **优先级**：按关键词长度降序匹配（优先匹配更长的关键词）
 
@@ -20,7 +21,7 @@
 - 发送删除通知到群聊，包含：
   - 命中关键词
   - 发送者信息（@用户名 或 user:ID）
-  - 命中位置（消息文本/媒体说明/按钮文字/按钮链接）
+  - 命中位置（消息文本/媒体说明/按钮文字/按钮链接/发送者用户名）
   - 命中内容预览（截断至 120 字符）
   - 完整消息预览
 - 删除失败时发送错误通知并提示检查权限
@@ -99,7 +100,7 @@ ADMINS_FILE="./admins.txt"            # 管理员文件路径 (默认)
 ```typescript
 type ReleaseNote = { version: string; summary: string };
 type KeywordEntry = { canonical: string; raw: string };
-type MessageMatchSource = "text" | "caption" | "button_text" | "button_url";
+type MessageMatchSource = "text" | "caption" | "button_text" | "button_url" | "username";
 type ScanCandidate = { source: MessageMatchSource; value: string };
 ```
 
@@ -159,6 +160,7 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| 2026-02-28 | 新增发送者用户名关键字检测 |
 | 2026-02-01 | 新增 inline keyboard 按钮文字/链接关键字检测 |
 | 2026-01-28 | 首次运行可用 /start 初始化全局管理员（admins.txt） |
 | 2026-01-27 | 关键词管理（keywords.txt）+ 群消息命中删除提示 |
