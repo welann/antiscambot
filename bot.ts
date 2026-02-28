@@ -46,7 +46,7 @@ function formatReleaseNotesForStart(maxItems = 10): string[] {
   if (!RELEASE_NOTES.length) return [];
 
   return [
-    "更新记录：",
+    "RELEASE_NOTES:",
     ...RELEASE_NOTES.slice(0, maxItems).map((note) => `- ${note.version}: ${note.summary}`),
   ];
 }
