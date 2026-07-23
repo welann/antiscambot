@@ -1,11 +1,17 @@
 {
 	"type": "module",
+	"scripts": {
+		"build": "tsc",
+		"start": "node bot.js",
+		"test": "pnpm run build && node --test tests/*.test.js"
+	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
 		"typescript": "^5.9.3"
 	},
 	"dependencies": {
 		"dotenv": "^17.2.3",
-		"grammy": "^1.39.3"
+		"grammy": "^1.39.3",
+		"node-cron": "^4.6.0"
 	}
 }

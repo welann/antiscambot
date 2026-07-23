@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。支持检测消息文本、媒体说明、内联键盘按钮文字及链接，以及发送者用户名。
+这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。它还可以每天从多个来源频道随机选择历史消息链接，整理后发送到一个目标频道，并使用 SQLite 永久保存配置和去重记录。
 
 ## 核心功能
 
@@ -34,24 +34,46 @@
 | `/keywords` | 查看所有关键词 | 任何人 |
 
 ### 4. 权限管理
-三种方式定义管理员：
+四种方式定义管理员：
 1. **环境变量**：`KEYWORD_ADMIN_IDS=123,456`
 2. **文件持久化**：`admins.txt` 存储用户 ID
 3. **群管理员**：自动识别群聊中的管理员
 4. **首次初始化**：首个使用 `/start` 的用户自动成为全局管理员
+
+### 5. 频道历史随机汇总
+
+- 支持登记多个公开或私有来源频道
+- 每天按 `Asia/Shanghai` 时区在 12:00 自动执行
+- 每个来源随机选择最多 10 个从未发送过的消息 ID
+- 来源频道有新帖时自动更新最新消息 ID
+- 按频道标题分组，将可点击链接整理为一条 HTML 汇总
+- 所有来源、目标、运行记录、链接和完整汇总内容存入 SQLite
+
+| 命令 | 功能 | 权限要求 |
+|------|------|----------|
+| `/addsource <links>` | 添加或重新启用一个或多个来源频道 | 全局管理员私聊 |
+| `/sources` | 查看目标、来源和剩余数量 | 全局管理员私聊 |
+| `/delsource <编号>` | 停用来源，保留历史去重记录 | 全局管理员私聊 |
+| `/settarget <link>` | 设置目标频道 | 全局管理员私聊 |
+| `/digestnow` | 立即发送一次汇总 | 全局管理员私聊 |
+
+`/addsource` 需要来源频道的最新帖子链接，`/settarget` 需要目标频道任意一条帖子的链接。Bot 必须是这些频道的管理员，并且在目标频道拥有发布消息权限。
 
 ## 项目结构
 
 ```
 .
 ├── bot.ts              # 主程序源代码 (TypeScript)
+├── digest.ts           # SQLite、抽样、排版和摘要运行逻辑
+├── tests/              # 摘要功能自动化测试
 ├── bot.js              # 编译后的 JavaScript
-├── bot.d.ts            # TypeScript 声明文件
 ├── package.json        # 项目依赖配置
 ├── tsconfig.json       # TypeScript 编译配置
-├── .env                # 环境变量 (BOT_TOKEN)
+├── .env.example        # 环境变量示例
 ├── keywords.txt        # 关键词持久化存储
 ├── admins.txt          # 管理员 ID 持久化存储
+├── data/
+│   └── antiscambot.sqlite # 频道摘要持久化数据库
 └── pnpm-lock.yaml      # 依赖锁定文件
 ```
 
@@ -59,7 +81,9 @@
 
 - **框架**: [Grammy](https://grammy.dev/) - Telegram Bot 框架
 - **语言**: TypeScript 5.9+
-- **运行时**: Node.js (ES Module)
+- **运行时**: Node.js 22+ (ES Module)
+- **数据库**: Node.js 内置 `node:sqlite`
+- **定时任务**: node-cron
 - **配置**: dotenv 环境变量管理
 
 ## 配置文件详解
@@ -70,7 +94,8 @@
   "type": "module",
   "dependencies": {
     "dotenv": "^17.2.3",
-    "grammy": "^1.39.3"
+    "grammy": "^1.39.3",
+    "node-cron": "^4.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -89,9 +114,14 @@
 ### 环境变量 (.env)
 ```bash
 BOT_TOKEN="your_bot_token_here"      # Telegram Bot Token (必需)
-KEYWORD_ADMIN_IDS="123,456"           # 全局管理员用户 ID (可选)
-KEYWORDS_FILE="./keywords.txt"        # 关键词文件路径 (默认)
-ADMINS_FILE="./admins.txt"            # 管理员文件路径 (默认)
+KEYWORD_ADMIN_IDS="123,456"          # 全局管理员用户 ID (可选)
+KEYWORDS_FILE="./keywords.txt"       # 关键词文件路径
+ADMINS_FILE="./admins.txt"           # 管理员文件路径
+
+DIGEST_DB_FILE="./data/antiscambot.sqlite"
+DIGEST_CRON="0 12 * * *"
+DIGEST_TIMEZONE="Asia/Shanghai"
+DIGEST_SAMPLE_SIZE="10"
 ```
 
 ## 代码架构
@@ -133,16 +163,30 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `hasAnyGlobalAdmins()` - 检查是否存在任何全局管理员
 - `bootstrapFirstAdminIfNeeded()` - 初始化首个管理员
 
-#### 5. Bot 命令处理器
+#### 5. 频道摘要模块
+
+- `DigestRepository` - SQLite schema、迁移、事务及持久化
+- `DigestService` - 永久去重抽样、消息预留和发送状态管理
+- `parseTelegramMessageLink()` - 解析公开/私有频道消息链接
+- `formatDigestChunks()` - HTML 分组排版和超长拆分
+- `shouldRunDailyCatchUp()` - 定时执行与启动补执行判断
+
+数据库启用 WAL、外键、`busy_timeout` 和 `synchronous=FULL`。Bot 在调用 Telegram 发送前会先预留随机 ID，因此即使发送时重启，也不会在以后重复抽取这些 ID。
+
+#### 6. Bot 命令处理器
 - `/start` - 启动提示，首次运行可初始化管理员
 - `/addkw` - 添加关键词
 - `/delkw` - 删除关键词
 - `/keywords` - 列出所有关键词
+- `/addsource` / `/delsource` / `/sources` - 管理摘要来源
+- `/settarget` - 设置摘要目标
+- `/digestnow` - 手动执行摘要
 
-#### 6. 消息处理器
+#### 7. 消息处理器
 - 监听所有消息，过滤非群聊消息
 - 排除 Bot 自身消息和命令消息
 - 扫描并处理命中关键词的消息
+- 监听来源频道的 `channel_post` 并更新最新消息 ID
 
 ### 全局状态
 ```typescript
@@ -160,6 +204,7 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| 2026-07-23 | 新增多频道历史随机链接汇总与 SQLite 持久化 |
 | 2026-02-28 | 新增发送者用户名关键字检测 |
 | 2026-02-01 | 新增 inline keyboard 按钮文字/链接关键字检测 |
 | 2026-01-28 | 首次运行可用 /start 初始化全局管理员（admins.txt） |
@@ -172,10 +217,13 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 pnpm install
 
 # 编译 TypeScript
-npx tsc
+pnpm run build
 
 # 运行 Bot
-node bot.js
+pnpm start
+
+# 运行自动化测试
+pnpm test
 ```
 
 ## Docker 部署
@@ -210,11 +258,29 @@ docker run -d \
 docker logs -f antiscambot
 ```
 
-镜像不会包含 `.env`、`keywords.txt` 或 `admins.txt`。`BOT_TOKEN` 通过 `--env-file` 注入，关键词和管理员配置保存在宿主机的 `data/` 目录中。若不需要迁移现有配置，可以跳过复制命令，机器人会自动创建空文件。
+镜像不会包含 `.env`、`keywords.txt`、`admins.txt` 或 SQLite 数据库。`BOT_TOKEN` 通过 `--env-file` 注入；关键词、管理员配置和 `antiscambot.sqlite` 都保存在宿主机的 `data/` 目录中。容器重建或重启后，只要继续挂载同一个目录，摘要来源、目标和永久去重记录就会自动恢复。
+
+SQLite 主库是当前唯一恢复来源，没有额外的滚动或远程备份。需要防范宿主机磁盘损坏时，应在外部定期备份整个 `data/` 目录。
+
+### 摘要配置示例
+
+在 Bot 私聊中执行：
+
+```text
+/addsource https://t.me/source_one/1234
+/addsource https://t.me/c/1234567890/5678
+/settarget https://t.me/digest_channel/1
+/sources
+/digestnow
+```
+
+Bot 只根据消息 ID 生成随机链接，不会读取真实历史内容或日期。频道中的删除消息、服务消息或空号可能生成无法打开的链接；这些 ID 仍会写入 SQLite，并且不会再次抽取。
 
 ## 部署注意事项
 
 1. **必需权限**: 机器人在群里需要 "删除消息" 的管理员权限
 2. **隐私模式**: 需要在 @BotFather 中关闭 Privacy Mode，否则无法接收群消息
-3. **文件持久化**: keywords.txt 和 admins.txt 需要写入权限
-4. **环境变量**: 生产环境建议使用更安全的方式管理 BOT_TOKEN
+3. **频道权限**: 来源频道中 Bot 必须是管理员，目标频道还必须允许 Bot 发布消息
+4. **文件持久化**: `keywords.txt`、`admins.txt` 和 SQLite 数据目录需要写入权限
+5. **单实例**: 不要让多个 Bot 容器同时写入同一个 SQLite 文件
+6. **环境变量**: 生产环境建议使用更安全的方式管理 BOT_TOKEN

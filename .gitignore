@@ -11,3 +11,8 @@ node_modules/
 *.d.ts.map
 
 *.txt
+
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

@@ -1,7 +1,21 @@
 import "dotenv/config";
 import { Bot, Context } from "grammy";
+import { schedule, validate } from "node-cron";
+import type { ScheduledTask } from "node-cron";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import {
+  DigestRepository,
+  DigestService,
+  getLocalDate,
+  parseTelegramMessageLink,
+  shouldRunDailyCatchUp,
+} from "./digest.js";
+import type {
+  LinkKind,
+  SourceChannelInput,
+  TargetChannelInput,
+} from "./digest.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN ?? "";
 if (!BOT_TOKEN) {
@@ -12,12 +26,38 @@ if (!BOT_TOKEN) {
 
 const KEYWORDS_FILE = process.env.KEYWORDS_FILE ?? "./keywords.txt";
 const ADMINS_FILE = process.env.ADMINS_FILE ?? "./admins.txt";
+const DIGEST_DB_FILE =
+  process.env.DIGEST_DB_FILE ?? "./data/antiscambot.sqlite";
+const DIGEST_CRON = process.env.DIGEST_CRON ?? "0 12 * * *";
+const DIGEST_TIMEZONE = process.env.DIGEST_TIMEZONE ?? "Asia/Shanghai";
+const DIGEST_SAMPLE_SIZE = parsePositiveInteger(
+  process.env.DIGEST_SAMPLE_SIZE,
+  10,
+  "DIGEST_SAMPLE_SIZE",
+);
+
+function parsePositiveInteger(
+  raw: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 100) {
+    throw new Error(`${name} must be an integer between 1 and 100`);
+  }
+  return value;
+}
 
 type ReleaseNote = { version: string; summary: string };
 
 type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-07-23",
+    summary: "新增多频道历史随机链接汇总与 SQLite 持久化",
+  },
   {
     version: "2026-02-28",
     summary: "新增发送者用户名关键字检测",
@@ -398,6 +438,115 @@ async function bootstrapFirstAdminIfNeeded(userId: number): Promise<boolean> {
 
 const bot = new Bot(BOT_TOKEN);
 let BOT_ID: number | null = null;
+let digestRepository: DigestRepository | null = null;
+let digestService: DigestService | null = null;
+let digestTask: ScheduledTask | null = null;
+
+function getDigestRepository(): DigestRepository {
+  if (!digestRepository) throw new Error("摘要数据库尚未初始化");
+  return digestRepository;
+}
+
+function getDigestService(): DigestService {
+  if (!digestService) throw new Error("摘要服务尚未初始化");
+  return digestService;
+}
+
+function canManageDigest(ctx: Context): boolean {
+  return (
+    ctx.chat?.type === "private" &&
+    !!ctx.from &&
+    isGlobalKeywordAdmin(ctx.from.id)
+  );
+}
+
+async function rejectUnauthorizedDigestCommand(ctx: Context): Promise<boolean> {
+  if (canManageDigest(ctx)) return false;
+  await ctx.reply("无权限：频道摘要配置只能由全局管理员在 Bot 私聊中操作。");
+  return true;
+}
+
+function canonicalPrivateLinkChannel(chatId: number): string {
+  const value = String(chatId);
+  if (!value.startsWith("-100") || value.length <= 4) {
+    throw new Error(`频道 ID 无法转换为私有消息链接：${chatId}`);
+  }
+  return value.slice(4);
+}
+
+type ResolvedManagedChannel = {
+  chatId: number;
+  title: string;
+  username: string | null;
+  linkKind: LinkKind;
+  linkChannel: string;
+  messageId: number;
+};
+
+async function resolveManagedChannel(
+  rawLink: string,
+  requirePostingPermission: boolean,
+): Promise<ResolvedManagedChannel> {
+  if (BOT_ID === null) throw new Error("Bot 信息尚未初始化");
+
+  const parsed = parseTelegramMessageLink(rawLink);
+  const chat = await bot.api.getChat(parsed.chatReference);
+  if (chat.type !== "channel") {
+    throw new Error("链接目标不是 Telegram 频道");
+  }
+
+  const member = await bot.api.getChatMember(chat.id, BOT_ID);
+  if (member.status !== "creator" && member.status !== "administrator") {
+    throw new Error("Bot 不是该频道的管理员");
+  }
+  if (
+    requirePostingPermission &&
+    member.status === "administrator" &&
+    member.can_post_messages !== true
+  ) {
+    throw new Error("Bot 在目标频道中没有发布消息权限");
+  }
+
+  const username = chat.username ?? null;
+  return {
+    chatId: chat.id,
+    title: chat.title,
+    username,
+    linkKind: username ? "public" : "private",
+    linkChannel: username ?? canonicalPrivateLinkChannel(chat.id),
+    messageId: parsed.messageId,
+  };
+}
+
+function formatDigestRunResult(
+  result: Awaited<ReturnType<DigestService["run"]>>,
+): string {
+  switch (result.status) {
+    case "sent":
+      return `汇总发送完成：${result.itemCount} 个链接，${result.messageCount} 条目标消息。`;
+    case "empty":
+      return "没有可用的新序号：所有来源均已耗尽。";
+    case "busy":
+      return "已有摘要任务正在运行，请稍后重试。";
+    case "already-ran":
+      return "今天的自动汇总已经执行过。";
+    case "not-configured":
+      return `摘要配置不完整：${result.error ?? "未知原因"}`;
+    case "failed":
+      return `摘要发送失败：${result.error ?? "未知错误"}。已预留的序号不会再次抽取。`;
+  }
+}
+
+async function runScheduledDigest(): Promise<void> {
+  const service = getDigestService();
+  const localDate = getLocalDate(new Date(), DIGEST_TIMEZONE);
+  const result = await service.run("scheduled", localDate);
+  if (result.status === "failed" || result.status === "not-configured") {
+    console.error(`[digest] ${formatDigestRunResult(result)}`);
+  } else {
+    console.log(`[digest] ${formatDigestRunResult(result)}`);
+  }
+}
 
 bot.command("start", async (ctx) => {
   const becameAdmin = ctx.from
@@ -426,6 +575,11 @@ bot.command("start", async (ctx) => {
     "- /addkw <keyword>  添加待检测关键字 (管理员)",
     "- /delkw <keyword>  删除关键字 (管理员)",
     "- /keywords         查看所有关键字",
+    "- /addsource <links> 添加摘要来源频道 (全局管理员私聊)",
+    "- /sources           查看摘要来源与目标",
+    "- /delsource <编号>  停用摘要来源",
+    "- /settarget <link>  设置摘要目标频道",
+    "- /digestnow         立即发送一次摘要",
   );
 
   return ctx.reply(lines.join("\n"));
@@ -476,6 +630,137 @@ bot.command("keywords", (ctx) => {
   if (!keywords.length) return ctx.reply("当前没有任何待检测关键字。");
 
   return ctx.reply(["当前待检测关键字：", ...keywords.map((k) => `- ${k}`)].join("\n"));
+});
+
+bot.command("addsource", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const links = (ctx.match?.trim() ?? "").split(/\s+/).filter(Boolean);
+  if (!links.length) {
+    return ctx.reply(
+      "用法：/addsource <来源频道最新帖子链接>\n可用空格或换行一次提交多个链接。",
+    );
+  }
+
+  const repository = getDigestRepository();
+  const target = repository.getTarget();
+  const resultLines: string[] = [];
+
+  for (const link of links) {
+    try {
+      const channel = await resolveManagedChannel(link, false);
+      if (target?.chatId === channel.chatId) {
+        throw new Error("该频道当前是摘要目标频道，不能同时作为来源");
+      }
+
+      const source: SourceChannelInput = {
+        chatId: channel.chatId,
+        title: channel.title,
+        username: channel.username,
+        linkKind: channel.linkKind,
+        linkChannel: channel.linkChannel,
+        latestMessageId: channel.messageId,
+      };
+      const saved = repository.upsertSource(source);
+      resultLines.push(
+        `✅ ${saved.title}：最新消息 ID ${saved.latestMessageId}`,
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      resultLines.push(`❌ ${link}：${reason}`);
+    }
+  }
+
+  return ctx.reply(resultLines.join("\n"), {
+    link_preview_options: { is_disabled: true },
+  });
+});
+
+bot.command("sources", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const repository = getDigestRepository();
+  const target = repository.getTarget();
+  const sources = repository.listActiveSourceStats();
+  const lines = [
+    "频道摘要配置",
+    target
+      ? `目标：${target.title} (${target.chatId})`
+      : "目标：尚未设置",
+    "",
+    `来源频道：${sources.length} 个`,
+  ];
+
+  if (!sources.length) {
+    lines.push("- 尚未添加来源频道");
+  } else {
+    for (const [index, source] of sources.entries()) {
+      lines.push(
+        `${index + 1}. ${source.title}`,
+        `   最新 ID: ${source.latestMessageId}｜已用: ${source.usedCount}｜剩余: ${source.remainingCount}`,
+      );
+    }
+  }
+
+  return ctx.reply(lines.join("\n"));
+});
+
+bot.command("delsource", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const index = Number(ctx.match?.trim() ?? "");
+  if (!Number.isSafeInteger(index) || index <= 0) {
+    return ctx.reply("用法：/delsource <来源编号>\n来源编号可通过 /sources 查看。");
+  }
+
+  const source = getDigestRepository().deactivateSourceByIndex(index);
+  if (!source) return ctx.reply("来源编号不存在，请先使用 /sources 查看。");
+  return ctx.reply(
+    `已停用来源频道：${source.title}\n历史抽取记录仍保留，重新添加后不会重复。`,
+  );
+});
+
+bot.command("settarget", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const links = (ctx.match?.trim() ?? "").split(/\s+/).filter(Boolean);
+  if (links.length !== 1) {
+    return ctx.reply("用法：/settarget <目标频道任意帖子链接>");
+  }
+
+  try {
+    const link = links[0];
+    if (!link) return ctx.reply("用法：/settarget <目标频道任意帖子链接>");
+    const channel = await resolveManagedChannel(link, true);
+    const repository = getDigestRepository();
+    const existingSource = repository.getSource(channel.chatId);
+    if (existingSource?.active) {
+      throw new Error("该频道当前是摘要来源频道，不能同时作为目标");
+    }
+
+    const target: TargetChannelInput = {
+      chatId: channel.chatId,
+      title: channel.title,
+      username: channel.username,
+      linkKind: channel.linkKind,
+      linkChannel: channel.linkChannel,
+    };
+    const saved = repository.setTarget(target);
+    return ctx.reply(`已设置摘要目标频道：${saved.title} (${saved.chatId})`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return ctx.reply(`设置目标频道失败：${reason}`);
+  }
+});
+
+bot.command("digestnow", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const result = await getDigestService().run(
+    "manual",
+    getLocalDate(new Date(), DIGEST_TIMEZONE),
+  );
+  return ctx.reply(formatDigestRunResult(result));
 });
 
 bot.on("message", async (ctx) => {
@@ -590,13 +875,82 @@ bot.on("edited_message", async (ctx) => {
   }
 });
 
+bot.on("channel_post", (ctx) => {
+  const repository = digestRepository;
+  if (!repository) return;
+
+  const updated = repository.updateLatestMessageId(
+    ctx.chat.id,
+    ctx.channelPost.message_id,
+  );
+  if (updated) {
+    console.log(
+      `[digest] 已更新来源频道 ${ctx.chat.title} 的最新消息 ID：${ctx.channelPost.message_id}`,
+    );
+  }
+});
+
 async function main(): Promise<void> {
   await loadKeywordsFromDisk();
   await loadAdminsFromDisk();
   const me = await bot.api.getMe();
   BOT_ID = me.id;
-  bot.start();
+
+  if (!validate(DIGEST_CRON)) {
+    throw new Error(`DIGEST_CRON is invalid: ${DIGEST_CRON}`);
+  }
+  // Validate the timezone eagerly instead of failing inside the cron callback.
+  getLocalDate(new Date(), DIGEST_TIMEZONE);
+
+  digestRepository = new DigestRepository(DIGEST_DB_FILE, {
+    cronExpression: DIGEST_CRON,
+    timeZone: DIGEST_TIMEZONE,
+    sampleSize: DIGEST_SAMPLE_SIZE,
+  });
+  digestService = new DigestService(
+    digestRepository,
+    async (targetChatId, html) => {
+      const message = await bot.api.sendMessage(targetChatId, html, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      });
+      return { messageId: message.message_id };
+    },
+    DIGEST_SAMPLE_SIZE,
+  );
+
+  digestTask = schedule(
+    DIGEST_CRON,
+    async () => {
+      await runScheduledDigest();
+    },
+    {
+      timezone: DIGEST_TIMEZONE,
+      noOverlap: true,
+      name: "daily-channel-digest",
+    },
+  );
+
+  const now = new Date();
+  const today = getLocalDate(now, DIGEST_TIMEZONE);
+  if (
+    shouldRunDailyCatchUp(DIGEST_CRON, DIGEST_TIMEZONE, now) &&
+    !digestRepository.hasScheduledRun(today)
+  ) {
+    await runScheduledDigest();
+  }
+
+  try {
+    await bot.start();
+  } finally {
+    await digestTask.stop();
+    digestRepository.close();
+  }
 }
+
+bot.catch((error) => {
+  console.error("Bot handler failed:", error.error);
+});
 
 main().catch((err) => {
   console.error(err);
