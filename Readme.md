@@ -234,12 +234,13 @@ pnpm test
 docker build -t antiscambot .
 ```
 
-首次启动前创建持久化数据目录；如果需要沿用当前的关键词和管理员配置，可以将现有文件复制进去：
+首次启动前创建持久化数据目录：
 
 ```bash
 mkdir -p data
-cp keywords.txt admins.txt data/
 ```
+
+镜像会内置构建时的 `keywords.txt` 和 `admins.txt`。首次连接一个尚未初始化的 `data/` 目录时，入口脚本会自动将它们复制为持久化文件；如果目录中已经存在非空文件，则保留现有数据。
 
 启动机器人：
 
@@ -258,7 +259,7 @@ docker run -d \
 docker logs -f antiscambot
 ```
 
-镜像不会包含 `.env`、`keywords.txt`、`admins.txt` 或 SQLite 数据库。`BOT_TOKEN` 通过 `--env-file` 注入；关键词、管理员配置和 `antiscambot.sqlite` 都保存在宿主机的 `data/` 目录中。容器重建或重启后，只要继续挂载同一个目录，摘要来源、目标和永久去重记录就会自动恢复。
+镜像不会包含 `.env` 或 SQLite 数据库，但会包含用于首次初始化的默认 `keywords.txt` 和 `admins.txt`。`BOT_TOKEN` 通过 `--env-file` 注入；实际运行中的关键词、管理员配置和 `antiscambot.sqlite` 都保存在宿主机的 `data/` 目录中。初始化完成后会生成 `.defaults-initialized` 标记，后续容器重建或重启不会用镜像默认值覆盖运行数据。
 
 SQLite 主库是当前唯一恢复来源，没有额外的滚动或远程备份。需要防范宿主机磁盘损坏时，应在外部定期备份整个 `data/` 目录。
 
