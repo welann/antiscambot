@@ -178,6 +178,40 @@ npx tsc
 node bot.js
 ```
 
+## Docker 部署
+
+构建镜像：
+
+```bash
+docker build -t antiscambot .
+```
+
+首次启动前创建持久化数据目录；如果需要沿用当前的关键词和管理员配置，可以将现有文件复制进去：
+
+```bash
+mkdir -p data
+cp keywords.txt admins.txt data/
+```
+
+启动机器人：
+
+```bash
+docker run -d \
+  --name antiscambot \
+  --restart unless-stopped \
+  --env-file .env \
+  -v "$(pwd)/data:/app/data" \
+  antiscambot
+```
+
+查看运行日志：
+
+```bash
+docker logs -f antiscambot
+```
+
+镜像不会包含 `.env`、`keywords.txt` 或 `admins.txt`。`BOT_TOKEN` 通过 `--env-file` 注入，关键词和管理员配置保存在宿主机的 `data/` 目录中。若不需要迁移现有配置，可以跳过复制命令，机器人会自动创建空文件。
+
 ## 部署注意事项
 
 1. **必需权限**: 机器人在群里需要 "删除消息" 的管理员权限
