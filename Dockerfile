@@ -30,7 +30,7 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/bot.js ./bot.js
 COPY --from=build --chown=node:node /app/digest.js ./digest.js
-COPY --chown=node:node keywords.txt admins.txt /app/defaults/
+COPY --chown=node:node keywords.txt /app/defaults/keywords.txt
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /app/data \

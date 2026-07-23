@@ -16,7 +16,6 @@ initialize_file() {
 
 if [ ! -e "$init_marker" ]; then
   initialize_file "$KEYWORDS_FILE" "$defaults_dir/keywords.txt"
-  initialize_file "$ADMINS_FILE" "$defaults_dir/admins.txt"
   mkdir -p "$(dirname "$init_marker")"
   : > "$init_marker"
 fi
