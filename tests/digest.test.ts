@@ -250,6 +250,22 @@ describe("SQLite persistence", () => {
     database.close();
   });
 
+  test("persists a command-updated sample size across restarts", () => {
+    const databasePath = createDatabasePath();
+    const repository = new DigestRepository(databasePath);
+    assert.equal(repository.getSampleSize(), 10);
+    assert.equal(repository.setSampleSize(30), 30);
+    repository.close();
+
+    const reopened = new DigestRepository(databasePath, {
+      cronExpression: "0 12 * * *",
+      timeZone: "Asia/Shanghai",
+      sampleSize: 10,
+    });
+    assert.equal(reopened.getSampleSize(), 30);
+    reopened.close();
+  });
+
   test("keeps reserved IDs after an interrupted run", () => {
     const databasePath = createDatabasePath();
     const repository = new DigestRepository(databasePath);
@@ -349,6 +365,29 @@ describe("digest service", () => {
     );
     assert.equal(third.status, "empty");
     assert.equal(repository.listActiveSourceStats()[0]?.usedCount, 12);
+    repository.close();
+  });
+
+  test("uses a command-updated sample size for the next digest", async () => {
+    const repository = new DigestRepository(":memory:");
+    repository.upsertSource(sourceInput({ latestMessageId: 5 }));
+    repository.setTarget(targetInput());
+    const sentHtml: string[] = [];
+    const service = new DigestService(
+      repository,
+      async (_chatId, html) => {
+        sentHtml.push(html);
+        return { messageId: sentHtml.length };
+      },
+      repository.getSampleSize(),
+    );
+
+    const sampleSize = repository.setSampleSize(3);
+    service.setSampleSize(sampleSize);
+    const result = await service.run("manual", "2026-07-23");
+
+    assert.equal(result.status, "sent");
+    assert.equal(result.itemCount, 3);
     repository.close();
   });
 

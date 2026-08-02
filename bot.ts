@@ -8,6 +8,7 @@ import {
   DigestRepository,
   DigestService,
   getLocalDate,
+  MAX_DIGEST_SAMPLE_SIZE,
   parseTelegramMessageLink,
   shouldRunDailyCatchUp,
 } from "./digest.js";
@@ -34,6 +35,7 @@ const DIGEST_SAMPLE_SIZE = parsePositiveInteger(
   process.env.DIGEST_SAMPLE_SIZE,
   10,
   "DIGEST_SAMPLE_SIZE",
+  MAX_DIGEST_SAMPLE_SIZE,
 );
 const DIGEST_SEND_MAX_ATTEMPTS = parsePositiveInteger(
   process.env.DIGEST_SEND_MAX_ATTEMPTS,
@@ -63,7 +65,7 @@ type KeywordEntry = { canonical: string; raw: string };
 const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: "2026-08-02",
-    summary: "频道摘要发送失败时自动重试，并可在下次 /digestnow 恢复发送",
+    summary: "频道摘要发送自动重试，并支持命令调整每日抽样数量",
   },
   {
     version: "2026-07-23",
@@ -590,6 +592,7 @@ bot.command("start", async (ctx) => {
     "- /sources           查看摘要来源与目标",
     "- /delsource <编号>  停用摘要来源",
     "- /settarget <link>  设置摘要目标频道",
+    "- /setsamplesize <数量> 设置每个来源频道每日抽样数量",
     "- /digestnow         立即发送一次摘要",
   );
 
@@ -698,6 +701,7 @@ bot.command("sources", async (ctx) => {
     target
       ? `目标：${target.title} (${target.chatId})`
       : "目标：尚未设置",
+    `每个来源频道每日抽样：${repository.getSampleSize()} 条`,
     "",
     `来源频道：${sources.length} 个`,
   ];
@@ -762,6 +766,25 @@ bot.command("settarget", async (ctx) => {
     const reason = error instanceof Error ? error.message : String(error);
     return ctx.reply(`设置目标频道失败：${reason}`);
   }
+});
+
+bot.command("setsamplesize", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const sampleSize = Number(ctx.match?.trim() ?? "");
+  if (
+    !Number.isSafeInteger(sampleSize) ||
+    sampleSize <= 0 ||
+    sampleSize > MAX_DIGEST_SAMPLE_SIZE
+  ) {
+    return ctx.reply(
+      `用法：/setsamplesize <数量>\n数量必须是 1 到 ${MAX_DIGEST_SAMPLE_SIZE} 的整数。`,
+    );
+  }
+
+  const saved = getDigestRepository().setSampleSize(sampleSize);
+  getDigestService().setSampleSize(saved);
+  return ctx.reply(`已设置每个来源频道每日抽样数量：${saved} 条。`);
 });
 
 bot.command("digestnow", async (ctx) => {
@@ -927,7 +950,7 @@ async function main(): Promise<void> {
       });
       return { messageId: message.message_id };
     },
-    DIGEST_SAMPLE_SIZE,
+    digestRepository.getSampleSize(),
     { sendMaxAttempts: DIGEST_SEND_MAX_ATTEMPTS },
   );
 

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 const SCHEMA_VERSION = 1;
 const MAX_TELEGRAM_MESSAGE_ID = 2_147_483_647;
 const DEFAULT_MESSAGE_LENGTH_LIMIT = 4_096;
+export const MAX_DIGEST_SAMPLE_SIZE = 100;
 
 type DatabaseRow = Record<string, unknown>;
 
@@ -353,7 +354,6 @@ export class DigestRepository {
            ON CONFLICT(singleton_id) DO UPDATE SET
              cron_expression = excluded.cron_expression,
              timezone = excluded.timezone,
-             sample_size = excluded.sample_size,
              updated_at = excluded.updated_at`,
         )
         .run(
@@ -413,6 +413,42 @@ export class DigestRepository {
       )
       .get() as DatabaseRow | undefined;
     return row ? targetFromRow(row) : null;
+  }
+
+  getSampleSize(): number {
+    const row = this.db
+      .prepare(
+        `SELECT sample_size
+         FROM digest_config
+         WHERE singleton_id = 1`,
+      )
+      .get() as DatabaseRow | undefined;
+    if (!row) throw new Error("摘要运行配置尚未初始化");
+    return asNumber(row.sample_size, "sample_size");
+  }
+
+  setSampleSize(sampleSize: number): number {
+    if (
+      !Number.isSafeInteger(sampleSize) ||
+      sampleSize <= 0 ||
+      sampleSize > MAX_DIGEST_SAMPLE_SIZE
+    ) {
+      throw new Error(`每日抽样数量必须是 1 到 ${MAX_DIGEST_SAMPLE_SIZE} 的整数`);
+    }
+
+    this.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE digest_config
+           SET sample_size = ?, updated_at = ?
+           WHERE singleton_id = 1`,
+        )
+        .run(sampleSize, nowIso());
+      if (Number(result.changes) !== 1) {
+        throw new Error("摘要运行配置尚未初始化");
+      }
+    });
+    return sampleSize;
   }
 
   setTarget(target: TargetChannelInput): TargetChannel {
@@ -1099,7 +1135,7 @@ export class DigestService {
   constructor(
     private readonly repository: DigestRepository,
     private readonly sender: DigestSender,
-    private readonly sampleSize: number,
+    private sampleSize: number,
     options: DigestServiceOptions = {},
   ) {
     this.sendMaxAttempts = options.sendMaxAttempts ?? DEFAULT_SEND_MAX_ATTEMPTS;
@@ -1110,6 +1146,7 @@ export class DigestService {
     if (!Number.isSafeInteger(this.retryDelayMs) || this.retryDelayMs < 0) {
       throw new Error("retryDelayMs must be a non-negative integer");
     }
+    this.setSampleSize(sampleSize);
   }
 
   private async sendWithRetry(
@@ -1137,6 +1174,17 @@ export class DigestService {
       `发送失败，已尝试 ${this.sendMaxAttempts} 次：${errorMessage(lastError)}`,
       { cause: lastError },
     );
+  }
+
+  setSampleSize(sampleSize: number): void {
+    if (
+      !Number.isSafeInteger(sampleSize) ||
+      sampleSize <= 0 ||
+      sampleSize > MAX_DIGEST_SAMPLE_SIZE
+    ) {
+      throw new Error(`sampleSize must be an integer between 1 and ${MAX_DIGEST_SAMPLE_SIZE}`);
+    }
+    this.sampleSize = sampleSize;
   }
 
   private getItemCountForRuns(runIds: Set<string>): number {

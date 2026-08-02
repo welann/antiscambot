@@ -121,7 +121,7 @@ ADMINS_FILE="./admins.txt"           # 管理员文件路径
 DIGEST_DB_FILE="./data/antiscambot.sqlite"
 DIGEST_CRON="0 12 * * *"
 DIGEST_TIMEZONE="Asia/Shanghai"
-DIGEST_SAMPLE_SIZE="10"
+DIGEST_SAMPLE_SIZE="10"             # 仅用于首次初始化
 DIGEST_SEND_MAX_ATTEMPTS="3"      # 每个摘要分段最多发送次数
 ```
 
@@ -172,7 +172,7 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `formatDigestChunks()` - HTML 分组排版和超长拆分
 - `shouldRunDailyCatchUp()` - 定时执行与启动补执行判断
 
-数据库启用 WAL、外键、`busy_timeout` 和 `synchronous=FULL`。Bot 在调用 Telegram 发送前会先预留随机 ID，因此即使发送时重启，也不会在以后重复抽取这些 ID。每个摘要分段发送失败时会按 1 秒、2 秒的间隔自动重试，默认总共尝试 3 次；可通过 `DIGEST_SEND_MAX_ATTEMPTS`（1-10）调整。若全部失败，下一次 `/digestnow` 会优先重发已保留的失败摘要，再进行新的抽样。
+数据库启用 WAL、外键、`busy_timeout` 和 `synchronous=FULL`。Bot 在调用 Telegram 发送前会先预留随机 ID，因此即使发送时重启，也不会在以后重复抽取这些 ID。每个摘要分段发送失败时会按 1 秒、2 秒的间隔自动重试，默认总共尝试 3 次；可通过 `DIGEST_SEND_MAX_ATTEMPTS`（1-10）调整。若全部失败，下一次 `/digestnow` 会优先重发已保留的失败摘要，再进行新的抽样。`DIGEST_SAMPLE_SIZE` 仅决定首次初始化的默认值；之后使用 `/setsamplesize` 修改的值会写入 SQLite，并在重启后保留。
 
 #### 6. Bot 命令处理器
 - `/start` - 启动提示，首次运行可初始化管理员
@@ -181,6 +181,7 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `/keywords` - 列出所有关键词
 - `/addsource` / `/delsource` / `/sources` - 管理摘要来源
 - `/settarget` - 设置摘要目标
+- `/setsamplesize <数量>` - 设置每个来源频道每日抽样数量（1-100）
 - `/digestnow` - 手动执行摘要
 
 #### 7. 消息处理器
@@ -205,7 +206,7 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
-| 2026-08-02 | 摘要发送失败时自动重试，并可在下次 `/digestnow` 恢复发送 |
+| 2026-08-02 | 摘要发送自动重试，并支持命令调整每日抽样数量 |
 | 2026-07-23 | 新增多频道历史随机链接汇总与 SQLite 持久化 |
 | 2026-02-28 | 新增发送者用户名关键字检测 |
 | 2026-02-01 | 新增 inline keyboard 按钮文字/链接关键字检测 |
