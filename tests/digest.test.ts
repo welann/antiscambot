@@ -356,20 +356,78 @@ describe("digest service", () => {
     const repository = new DigestRepository(":memory:");
     repository.upsertSource(sourceInput({ latestMessageId: 1 }));
     repository.setTarget(targetInput());
+    let sendAttempts = 0;
     const service = new DigestService(
       repository,
       async () => {
+        sendAttempts += 1;
         throw new Error("Telegram unavailable");
       },
       10,
+      { retryDelayMs: 0 },
     );
 
     const failed = await service.run("manual", "2026-07-23");
-    const retry = await service.run("manual", "2026-07-23");
     assert.equal(failed.status, "failed");
     assert.equal(failed.itemCount, 1);
-    assert.equal(retry.status, "empty");
+    assert.equal(sendAttempts, 3);
+    assert.match(failed.error ?? "", /已尝试 3 次/);
     assert.equal(repository.listActiveSourceStats()[0]?.usedCount, 1);
+    repository.close();
+  });
+
+  test("retries a transient send error and delivers the reserved digest", async () => {
+    const repository = new DigestRepository(":memory:");
+    repository.upsertSource(sourceInput({ latestMessageId: 1 }));
+    repository.setTarget(targetInput());
+    let sendAttempts = 0;
+    const service = new DigestService(
+      repository,
+      async () => {
+        sendAttempts += 1;
+        if (sendAttempts < 3) throw new Error("Network request failed");
+        return { messageId: 123 };
+      },
+      10,
+      { retryDelayMs: 0 },
+    );
+
+    const result = await service.run("manual", "2026-07-23");
+    assert.equal(result.status, "sent");
+    assert.equal(result.itemCount, 1);
+    assert.equal(result.messageCount, 1);
+    assert.equal(sendAttempts, 3);
+    repository.close();
+  });
+
+  test("retries a previously failed digest before selecting new IDs", async () => {
+    const repository = new DigestRepository(":memory:");
+    repository.upsertSource(sourceInput({ latestMessageId: 1 }));
+    repository.setTarget(targetInput());
+    let available = false;
+    let sendAttempts = 0;
+    const service = new DigestService(
+      repository,
+      async () => {
+        sendAttempts += 1;
+        if (!available) throw new Error("Network request failed");
+        return { messageId: 123 };
+      },
+      10,
+      { retryDelayMs: 0 },
+    );
+
+    const failed = await service.run("manual", "2026-07-23");
+    available = true;
+    const recovered = await service.run("manual", "2026-07-23");
+    const next = await service.run("manual", "2026-07-23");
+
+    assert.equal(failed.status, "failed");
+    assert.equal(recovered.status, "sent");
+    assert.equal(recovered.itemCount, 1);
+    assert.equal(recovered.messageCount, 1);
+    assert.equal(next.status, "empty");
+    assert.equal(sendAttempts, 4);
     repository.close();
   });
 });

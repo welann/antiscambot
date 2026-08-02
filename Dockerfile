@@ -22,7 +22,8 @@ ENV NODE_ENV=production \
     DIGEST_DB_FILE=/app/data/antiscambot.sqlite \
     DIGEST_CRON="0 12 * * *" \
     DIGEST_TIMEZONE=Asia/Shanghai \
-    DIGEST_SAMPLE_SIZE=10
+    DIGEST_SAMPLE_SIZE=10 \
+    DIGEST_SEND_MAX_ATTEMPTS=3
 
 WORKDIR /app
 

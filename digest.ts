@@ -85,6 +85,12 @@ export interface DigestChunk {
   selections: DigestSelection[];
 }
 
+interface FailedDigestChunk {
+  runId: string;
+  chunkIndex: number;
+  html: string;
+}
+
 export interface DigestSendResult {
   messageId: number;
 }
@@ -106,6 +112,15 @@ export interface DigestRunResult {
   messageCount: number;
   error: string | null;
 }
+
+export interface DigestServiceOptions {
+  sendMaxAttempts?: number;
+  retryDelayMs?: number;
+}
+
+const DEFAULT_SEND_MAX_ATTEMPTS = 3;
+const DEFAULT_SEND_RETRY_DELAY_MS = 1_000;
+const MAX_SEND_RETRY_DELAY_MS = 30_000;
 
 function asNumber(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
@@ -162,6 +177,10 @@ function nowIso(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function waitForRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export class DigestRepository {
@@ -719,6 +738,37 @@ export class DigestRepository {
     });
   }
 
+  listFailedChunks(): FailedDigestChunk[] {
+    const rows = this.db
+      .prepare(
+        `SELECT m.run_id, m.chunk_index, m.html_body
+         FROM digest_messages AS m
+         INNER JOIN digest_runs AS r ON r.id = m.run_id
+         WHERE m.status = 'failed'
+         ORDER BY r.started_at, m.chunk_index`,
+      )
+      .all() as DatabaseRow[];
+    return rows.map((row) => ({
+      runId: asString(row.run_id, "run_id"),
+      chunkIndex: asNumber(row.chunk_index, "chunk_index"),
+      html: asString(row.html_body, "html_body"),
+    }));
+  }
+
+  completeRunIfAllChunksSent(runId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS pending_count
+         FROM digest_messages
+         WHERE run_id = ? AND status <> 'sent'`,
+      )
+      .get(runId) as DatabaseRow | undefined;
+    if (!row || asNumber(row.pending_count, "pending_count") !== 0) return false;
+
+    this.completeRun(runId);
+    return true;
+  }
+
   completeRun(runId: string): void {
     this.db
       .prepare(
@@ -1043,12 +1093,94 @@ export function shouldRunDailyCatchUp(
 
 export class DigestService {
   private running = false;
+  private readonly sendMaxAttempts: number;
+  private readonly retryDelayMs: number;
 
   constructor(
     private readonly repository: DigestRepository,
     private readonly sender: DigestSender,
     private readonly sampleSize: number,
-  ) {}
+    options: DigestServiceOptions = {},
+  ) {
+    this.sendMaxAttempts = options.sendMaxAttempts ?? DEFAULT_SEND_MAX_ATTEMPTS;
+    this.retryDelayMs = options.retryDelayMs ?? DEFAULT_SEND_RETRY_DELAY_MS;
+    if (!Number.isSafeInteger(this.sendMaxAttempts) || this.sendMaxAttempts <= 0) {
+      throw new Error("sendMaxAttempts must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.retryDelayMs) || this.retryDelayMs < 0) {
+      throw new Error("retryDelayMs must be a non-negative integer");
+    }
+  }
+
+  private async sendWithRetry(
+    targetChatId: number,
+    html: string,
+  ): Promise<DigestSendResult> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.sendMaxAttempts; attempt += 1) {
+      try {
+        return await this.sender(targetChatId, html);
+      } catch (error) {
+        lastError = error;
+        if (attempt === this.sendMaxAttempts) break;
+
+        const delayMs = Math.min(
+          this.retryDelayMs * 2 ** (attempt - 1),
+          MAX_SEND_RETRY_DELAY_MS,
+        );
+        if (delayMs > 0) await waitForRetry(delayMs);
+      }
+    }
+
+    throw new Error(
+      `发送失败，已尝试 ${this.sendMaxAttempts} 次：${errorMessage(lastError)}`,
+      { cause: lastError },
+    );
+  }
+
+  private getItemCountForRuns(runIds: Set<string>): number {
+    let itemCount = 0;
+    for (const runId of runIds) {
+      itemCount += this.repository.getRunItemCount(runId);
+    }
+    return itemCount;
+  }
+
+  private async retryFailedChunks(
+    targetChatId: number,
+  ): Promise<DigestRunResult | null> {
+    const chunks = this.repository.listFailedChunks();
+    if (!chunks.length) return null;
+
+    const runIds = new Set(chunks.map((chunk) => chunk.runId));
+    let sentMessages = 0;
+    for (const chunk of chunks) {
+      this.repository.markChunkDispatching(chunk.runId, chunk.chunkIndex);
+      try {
+        const result = await this.sendWithRetry(targetChatId, chunk.html);
+        this.repository.markChunkSent(chunk.runId, chunk.chunkIndex, result.messageId);
+        this.repository.completeRunIfAllChunksSent(chunk.runId);
+        sentMessages += 1;
+      } catch (error) {
+        const reason = errorMessage(error);
+        this.repository.markChunkFailed(chunk.runId, chunk.chunkIndex, reason);
+        return {
+          status: "failed",
+          itemCount: this.getItemCountForRuns(runIds),
+          messageCount: sentMessages,
+          error: reason,
+        };
+      }
+    }
+
+    return {
+      status: "sent",
+      itemCount: this.getItemCountForRuns(runIds),
+      messageCount: sentMessages,
+      error: null,
+    };
+  }
 
   async run(
     trigger: DigestTrigger,
@@ -1073,19 +1205,22 @@ export class DigestService {
       };
     }
 
-    const sources = this.repository.listActiveSources();
-    if (!sources.length) {
-      return {
-        status: "not-configured",
-        itemCount: 0,
-        messageCount: 0,
-        error: "尚未添加来源频道",
-      };
-    }
-
     this.running = true;
     let runId: string | null = null;
     try {
+      const retriedResult = await this.retryFailedChunks(target.chatId);
+      if (retriedResult) return retriedResult;
+
+      const sources = this.repository.listActiveSources();
+      if (!sources.length) {
+        return {
+          status: "not-configured",
+          itemCount: 0,
+          messageCount: 0,
+          error: "尚未添加来源频道",
+        };
+      }
+
       runId = this.repository.beginRun(trigger, localDate);
       if (!runId) {
         return {
@@ -1133,7 +1268,7 @@ export class DigestService {
         this.repository.reserveChunk(runId, chunkIndex, chunk);
         this.repository.markChunkDispatching(runId, chunkIndex);
         try {
-          const result = await this.sender(target.chatId, chunk.html);
+          const result = await this.sendWithRetry(target.chatId, chunk.html);
           this.repository.markChunkSent(runId, chunkIndex, result.messageId);
           sentMessages += 1;
         } catch (error) {

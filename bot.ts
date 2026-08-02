@@ -35,16 +35,23 @@ const DIGEST_SAMPLE_SIZE = parsePositiveInteger(
   10,
   "DIGEST_SAMPLE_SIZE",
 );
+const DIGEST_SEND_MAX_ATTEMPTS = parsePositiveInteger(
+  process.env.DIGEST_SEND_MAX_ATTEMPTS,
+  3,
+  "DIGEST_SEND_MAX_ATTEMPTS",
+  10,
+);
 
 function parsePositiveInteger(
   raw: string | undefined,
   fallback: number,
   name: string,
+  maxValue = 100,
 ): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0 || value > 100) {
-    throw new Error(`${name} must be an integer between 1 and 100`);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maxValue) {
+    throw new Error(`${name} must be an integer between 1 and ${maxValue}`);
   }
   return value;
 }
@@ -54,6 +61,10 @@ type ReleaseNote = { version: string; summary: string };
 type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-08-02",
+    summary: "频道摘要发送失败时自动重试，并可在下次 /digestnow 恢复发送",
+  },
   {
     version: "2026-07-23",
     summary: "新增多频道历史随机链接汇总与 SQLite 持久化",
@@ -917,6 +928,7 @@ async function main(): Promise<void> {
       return { messageId: message.message_id };
     },
     DIGEST_SAMPLE_SIZE,
+    { sendMaxAttempts: DIGEST_SEND_MAX_ATTEMPTS },
   );
 
   digestTask = schedule(
