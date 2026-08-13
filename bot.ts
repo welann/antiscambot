@@ -69,7 +69,7 @@ type KeywordEntry = { canonical: string; raw: string };
 const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: "2026-08-13",
-    summary: "新增固定格式链接投稿，可发布为频道超链接",
+    summary: "新增固定格式链接投稿，可发布带预览的频道超链接",
   },
   {
     version: "2026-08-02",
@@ -854,7 +854,6 @@ async function handleLinkSubmission(ctx: Context): Promise<void> {
     for (const chunk of chunks) {
       await ctx.api.sendMessage(target.chatId, chunk, {
         parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
       });
       sentMessages += 1;
     }
