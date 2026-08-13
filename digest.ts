@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_TELEGRAM_MESSAGE_ID = 2_147_483_647;
 const DEFAULT_MESSAGE_LENGTH_LIMIT = 4_096;
 export const MAX_DIGEST_SAMPLE_SIZE = 100;
@@ -61,6 +61,16 @@ export interface TargetChannelInput {
   username: string | null;
   linkKind: LinkKind;
   linkChannel: string;
+}
+
+export interface LinkSubmissionTarget {
+  chatId: number;
+  title: string;
+}
+
+export interface LinkSubmissionTargetInput {
+  chatId: number;
+  title: string;
 }
 
 export interface DigestRuntimeConfig {
@@ -169,6 +179,13 @@ function targetFromRow(row: DatabaseRow): TargetChannel {
     linkKind: parseLinkKind(row.target_link_kind),
     linkChannel: asString(row.target_link_channel, "target_link_channel"),
     updatedAt: asString(row.updated_at, "updated_at"),
+  };
+}
+
+function linkSubmissionTargetFromRow(row: DatabaseRow): LinkSubmissionTarget {
+  return {
+    chatId: asNumber(row.target_chat_id, "target_chat_id"),
+    title: asString(row.target_title, "target_title"),
   };
 }
 
@@ -334,8 +351,18 @@ export class DigestRepository {
             PRIMARY KEY (run_id, chunk_index)
           );
         `);
-        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       }
+      if (currentVersion < 2) {
+        this.db.exec(`
+          CREATE TABLE link_submission_config (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            target_chat_id INTEGER,
+            target_title TEXT,
+            updated_at TEXT NOT NULL
+          );
+        `);
+      }
+      this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     });
   }
 
@@ -425,6 +452,42 @@ export class DigestRepository {
       .get() as DatabaseRow | undefined;
     if (!row) throw new Error("摘要运行配置尚未初始化");
     return asNumber(row.sample_size, "sample_size");
+  }
+
+  getLinkSubmissionTarget(): LinkSubmissionTarget | null {
+    const row = this.db
+      .prepare(
+        `SELECT target_chat_id, target_title
+         FROM link_submission_config
+         WHERE singleton_id = 1 AND target_chat_id IS NOT NULL`,
+      )
+      .get() as DatabaseRow | undefined;
+    return row ? linkSubmissionTargetFromRow(row) : null;
+  }
+
+  setLinkSubmissionTarget(
+    target: LinkSubmissionTargetInput,
+  ): LinkSubmissionTarget {
+    this.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO link_submission_config (
+             singleton_id,
+             target_chat_id,
+             target_title,
+             updated_at
+           ) VALUES (1, ?, ?, ?)
+           ON CONFLICT(singleton_id) DO UPDATE SET
+             target_chat_id = excluded.target_chat_id,
+             target_title = excluded.target_title,
+             updated_at = excluded.updated_at`,
+        )
+        .run(target.chatId, target.title, nowIso());
+    });
+
+    const saved = this.getLinkSubmissionTarget();
+    if (!saved) throw new Error("投稿目标频道保存失败");
+    return saved;
   }
 
   setSampleSize(sampleSize: number): number {

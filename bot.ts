@@ -5,6 +5,10 @@ import type { ScheduledTask } from "node-cron";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+  formatLinkSubmissionChunks,
+  parseLinkSubmissionInput,
+} from "./link-submission.js";
+import {
   DigestRepository,
   DigestService,
   getLocalDate,
@@ -63,6 +67,10 @@ type ReleaseNote = { version: string; summary: string };
 type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-08-13",
+    summary: "新增固定格式链接投稿，可发布为频道超链接",
+  },
   {
     version: "2026-08-02",
     summary: "频道摘要发送自动重试，并支持命令调整每日抽样数量",
@@ -593,6 +601,7 @@ bot.command("start", async (ctx) => {
     "- /delsource <编号>  停用摘要来源",
     "- /settarget <link>  设置摘要目标频道",
     "- /setsamplesize <数量> 设置每个来源频道每日抽样数量",
+    "- /setlinktarget <link> 设置链接投稿频道",
     "- /digestnow         立即发送一次摘要",
   );
 
@@ -768,6 +777,29 @@ bot.command("settarget", async (ctx) => {
   }
 });
 
+bot.command("setlinktarget", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+
+  const links = (ctx.match?.trim() ?? "").split(/\s+/).filter(Boolean);
+  if (links.length !== 1) {
+    return ctx.reply("用法：/setlinktarget <目标频道任意帖子链接>");
+  }
+
+  try {
+    const link = links[0];
+    if (!link) return ctx.reply("用法：/setlinktarget <目标频道任意帖子链接>");
+    const channel = await resolveManagedChannel(link, true);
+    const saved = getDigestRepository().setLinkSubmissionTarget({
+      chatId: channel.chatId,
+      title: channel.title,
+    });
+    return ctx.reply(`已设置链接投稿频道：${saved.title} (${saved.chatId})`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return ctx.reply(`设置链接投稿频道失败：${reason}`);
+  }
+});
+
 bot.command("setsamplesize", async (ctx) => {
   if (await rejectUnauthorizedDigestCommand(ctx)) return;
 
@@ -797,9 +829,51 @@ bot.command("digestnow", async (ctx) => {
   return ctx.reply(formatDigestRunResult(result));
 });
 
+async function handleLinkSubmission(ctx: Context): Promise<void> {
+  const message = ctx.message;
+  if (!canManageDigest(ctx) || !message?.text) return;
+
+  const isCommand = message.entities?.some(
+    (entity) => entity.type === "bot_command" && entity.offset === 0,
+  );
+  if (isCommand || !/\|\s*原文\s*\(/u.test(message.text)) return;
+
+  const repository = getDigestRepository();
+  const target = repository.getLinkSubmissionTarget();
+  if (!target) {
+    await ctx.reply(
+      "尚未设置链接投稿频道。请先使用 /setlinktarget <目标频道任意帖子链接>。",
+    );
+    return;
+  }
+
+  try {
+    const entries = parseLinkSubmissionInput(message.text);
+    const chunks = formatLinkSubmissionChunks(entries);
+    let sentMessages = 0;
+    for (const chunk of chunks) {
+      await ctx.api.sendMessage(target.chatId, chunk, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      });
+      sentMessages += 1;
+    }
+    await ctx.reply(
+      `已发布 ${entries.length} 条链接到 ${target.title}（${sentMessages} 条频道消息）。`,
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await ctx.reply(`链接发布失败：${reason}`);
+  }
+}
+
 bot.on("message", async (ctx) => {
   if (BOT_ID !== null && ctx.from?.id === BOT_ID) return;
   if (!ctx.chat || !ctx.message) return;
+  if (ctx.chat.type === "private") {
+    await handleLinkSubmission(ctx);
+    return;
+  }
   if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
 
   const isCommand =

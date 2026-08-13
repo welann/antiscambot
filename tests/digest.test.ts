@@ -266,6 +266,25 @@ describe("SQLite persistence", () => {
     reopened.close();
   });
 
+  test("persists the link submission target independently from the digest target", () => {
+    const databasePath = createDatabasePath();
+    const repository = new DigestRepository(databasePath);
+    assert.equal(repository.getLinkSubmissionTarget(), null);
+    repository.setLinkSubmissionTarget({
+      chatId: -1001112223334,
+      title: "投稿频道",
+    });
+    repository.close();
+
+    const reopened = new DigestRepository(databasePath);
+    assert.deepEqual(reopened.getLinkSubmissionTarget(), {
+      chatId: -1001112223334,
+      title: "投稿频道",
+    });
+    assert.equal(reopened.getTarget(), null);
+    reopened.close();
+  });
+
   test("keeps reserved IDs after an interrupted run", () => {
     const databasePath = createDatabasePath();
     const repository = new DigestRepository(databasePath);

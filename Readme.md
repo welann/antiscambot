@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。它还可以每天从多个来源频道随机选择历史消息链接，整理后发送到一个目标频道，并使用 SQLite 永久保存配置和去重记录。
+这是一个基于 Telegram 的反诈骗机器人，用于自动检测并删除群聊中包含敏感关键词的消息。它还可以每天从多个来源频道随机选择历史消息链接，整理后发送到一个目标频道，并支持将管理员私聊提交的固定格式链接发布为频道超链接。
 
 ## 核心功能
 
@@ -59,12 +59,28 @@
 
 `/addsource` 需要来源频道的最新帖子链接，`/settarget` 需要目标频道任意一条帖子的链接。Bot 必须是这些频道的管理员，并且在目标频道拥有发布消息权限。
 
+### 6. 固定格式链接投稿
+
+- 使用 `/setlinktarget <目标频道任意帖子链接>` 设置独立的投稿频道
+- 全局管理员在与 Bot 的私聊中直接发送一行或多行固定格式链接，Bot 会以 Telegram HTML 超链接发布到该频道
+- 每行格式：`标题 (文章链接) | 原文 (原文链接)`
+- 单次输入过长时，Bot 会在条目之间拆分为多条频道消息
+
+示例：
+
+```text
+“落到美国人手上，是日本民族最大的幸运”，这句话说得对吗？ (https://telegra.ph/落到美国人手上是日本民族最大的幸运这句话说得对吗-08-13) | 原文 (https://www.zhihu.com/question/2068450586501108139/answer/2070592166431347179)
+```
+
+投稿目标与每日摘要目标独立保存。Bot 必须是投稿频道管理员，并且拥有发布消息权限。
+
 ## 项目结构
 
 ```
 .
 ├── bot.ts              # 主程序源代码 (TypeScript)
 ├── digest.ts           # SQLite、抽样、排版和摘要运行逻辑
+├── link-submission.ts  # 固定格式链接解析与 Telegram HTML 排版
 ├── tests/              # 摘要功能自动化测试
 ├── bot.js              # 编译后的 JavaScript
 ├── package.json        # 项目依赖配置
@@ -172,9 +188,14 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `formatDigestChunks()` - HTML 分组排版和超长拆分
 - `shouldRunDailyCatchUp()` - 定时执行与启动补执行判断
 
+#### 6. 固定格式链接投稿模块
+
+- `parseLinkSubmissionInput()` - 校验并解析用户输入的固定格式链接
+- `formatLinkSubmissionChunks()` - 转换为 Telegram HTML 超链接并按长度拆分
+
 数据库启用 WAL、外键、`busy_timeout` 和 `synchronous=FULL`。Bot 在调用 Telegram 发送前会先预留随机 ID，因此即使发送时重启，也不会在以后重复抽取这些 ID。每个摘要分段发送失败时会按 1 秒、2 秒的间隔自动重试，默认总共尝试 3 次；可通过 `DIGEST_SEND_MAX_ATTEMPTS`（1-10）调整。若全部失败，下一次 `/digestnow` 会优先重发已保留的失败摘要，再进行新的抽样。`DIGEST_SAMPLE_SIZE` 仅决定首次初始化的默认值；之后使用 `/setsamplesize` 修改的值会写入 SQLite，并在重启后保留。
 
-#### 6. Bot 命令处理器
+#### 7. Bot 命令处理器
 - `/start` - 启动提示，首次运行可初始化管理员
 - `/addkw` - 添加关键词
 - `/delkw` - 删除关键词
@@ -182,12 +203,14 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `/addsource` / `/delsource` / `/sources` - 管理摘要来源
 - `/settarget` - 设置摘要目标
 - `/setsamplesize <数量>` - 设置每个来源频道每日抽样数量（1-100）
+- `/setlinktarget <link>` - 设置固定格式链接投稿频道
 - `/digestnow` - 手动执行摘要
 
-#### 7. 消息处理器
+#### 8. 消息处理器
 - 监听所有消息，过滤非群聊消息
 - 排除 Bot 自身消息和命令消息
 - 扫描并处理命中关键词的消息
+- 接收全局管理员私聊中的固定格式链接并发布到投稿频道
 - 监听来源频道的 `channel_post` 并更新最新消息 ID
 
 ### 全局状态
@@ -206,6 +229,7 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| 2026-08-13 | 新增固定格式链接投稿，可发布为频道超链接 |
 | 2026-08-02 | 摘要发送自动重试，并支持命令调整每日抽样数量 |
 | 2026-07-23 | 新增多频道历史随机链接汇总与 SQLite 持久化 |
 | 2026-02-28 | 新增发送者用户名关键字检测 |
