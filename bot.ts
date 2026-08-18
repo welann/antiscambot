@@ -68,6 +68,10 @@ type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "2026-08-18",
+    summary: "投稿频道内的固定格式链接可直接编辑原消息，保留回复关系",
+  },
+  {
     version: "2026-08-13",
     summary: "新增固定格式链接投稿，可发布带预览的频道超链接",
   },
@@ -507,6 +511,7 @@ type ResolvedManagedChannel = {
 async function resolveManagedChannel(
   rawLink: string,
   requirePostingPermission: boolean,
+  requireEditingPermission = false,
 ): Promise<ResolvedManagedChannel> {
   if (BOT_ID === null) throw new Error("Bot 信息尚未初始化");
 
@@ -526,6 +531,13 @@ async function resolveManagedChannel(
     member.can_post_messages !== true
   ) {
     throw new Error("Bot 在目标频道中没有发布消息权限");
+  }
+  if (
+    requireEditingPermission &&
+    member.status === "administrator" &&
+    member.can_edit_messages !== true
+  ) {
+    throw new Error("Bot 在目标频道中没有编辑消息权限");
   }
 
   const username = chat.username ?? null;
@@ -788,7 +800,7 @@ bot.command("setlinktarget", async (ctx) => {
   try {
     const link = links[0];
     if (!link) return ctx.reply("用法：/setlinktarget <目标频道任意帖子链接>");
-    const channel = await resolveManagedChannel(link, true);
+    const channel = await resolveManagedChannel(link, true, true);
     const saved = getDigestRepository().setLinkSubmissionTarget({
       chatId: channel.chatId,
       title: channel.title,
@@ -985,6 +997,34 @@ bot.on("edited_message", async (ctx) => {
 bot.on("channel_post", (ctx) => {
   const repository = digestRepository;
   if (!repository) return;
+
+  const linkSubmissionTarget = repository.getLinkSubmissionTarget();
+  const message = ctx.channelPost;
+  if (
+    linkSubmissionTarget?.chatId === ctx.chat.id &&
+    typeof message.text === "string" &&
+    /\|\s*原文\s*\(/u.test(message.text)
+  ) {
+    try {
+      const entries = parseLinkSubmissionInput(message.text);
+      const chunks = formatLinkSubmissionChunks(entries);
+      if (chunks.length !== 1) {
+        throw new Error("内容超过单条 Telegram 消息长度，无法保留原回复关系");
+      }
+      const html = chunks[0];
+      if (!html) throw new Error("未生成可编辑的链接内容");
+
+      void ctx.api.editMessageText(ctx.chat.id, message.message_id, html, {
+        parse_mode: "HTML",
+      }).catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`[link-submission] 编辑频道消息失败：${reason}`);
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[link-submission] 跳过频道消息转换：${reason}`);
+    }
+  }
 
   const updated = repository.updateLatestMessageId(
     ctx.chat.id,
