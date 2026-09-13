@@ -107,7 +107,7 @@ printf '%s' '{"template":"literary","scale":3}' | node calendar-studio/generate.
 
 接口映射为：`hitokoto` → `quote`，`from` → `bookTitle`，`from_who` → `author`。缺少作者时使用“佚名”，不会使用投稿者 `creator`。手动摘句没有出处时使用“今日摘句”。
 
-自动请求使用 `https://v1.hitokoto.cn/`，JSON 编码；默认分类为文学 d、诗词 i、哲学 k。`types:[]` 不添加分类筛选。可选类型与参数定义见[一言语句接口文档](https://developer.hitokoto.cn/sentence/)。官方全球接口限制为 2 QPS；批量调用时请由调用方限速，程序不做自动重试，也不会在请求失败时捏造摘句。
+自动请求使用 `https://v1.hitokoto.cn/`，JSON 编码；分类限定为动画 a、漫画 b、游戏 c、文学 d、诗词 i、哲学 k，默认同时请求这六类。`types` 只能从这六个字母中取一个或多个，其它字母（e/f/g/h/j/l）或空数组会被拒绝。可选类型与参数定义见[一言语句接口文档](https://developer.hitokoto.cn/sentence/)。官方全球接口限制为 2 QPS；批量调用时请由调用方限速，程序不做自动重试，也不会在请求失败时捏造摘句。
 
 结果的 `source` 保留原始句子、出处、作者、ID、UUID 和一言详情链接。自填摘句且未提供 sentence 时 `source` 为 null。显式提供 sentence 后再覆盖 fields 时，source 记录的仍是原始来源，fields 记录实际印制内容。
 

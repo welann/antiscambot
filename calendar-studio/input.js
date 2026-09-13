@@ -1,6 +1,8 @@
 import { randomInt } from 'node:crypto';
 
 export const TEMPLATES = ['minimal', 'geometric', 'literary', 'constructivist', 'broadsheet'];
+// 一言分类：a 动画、b 漫画、c 游戏、d 文学、i 诗词、k 哲学。这里作为默认值，也是唯一允许的取值集合。
+export const HITOKOTO_TYPES = ['a', 'b', 'c', 'd', 'i', 'k'];
 export const FIELD_KEYS = ['month', 'day', 'weekday', 'fullDate', 'weekNo', 'dayOfYear', 'year', 'quote', 'bookTitle', 'author', 'footer', 'issue'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = message => { throw new Error(message); };
@@ -48,8 +50,8 @@ export function parseInput(input) {
 
 function validateApiOptions(options) {
   for (const key of Object.keys(options)) if (!['types', 'minLength', 'maxLength', 'timeoutMs'].includes(key)) fail(`未知一言参数：${key}`);
-  const types = options.types ?? ['d', 'i', 'k'];
-  if (!Array.isArray(types) || types.some(type => typeof type !== 'string' || !/^[a-l]$/.test(type))) fail('hitokoto.types 必须是 a–l 分类字母组成的数组');
+  const types = options.types ?? HITOKOTO_TYPES;
+  if (!Array.isArray(types) || !types.length || types.some(type => !HITOKOTO_TYPES.includes(type))) fail(`hitokoto.types 必须是 ${HITOKOTO_TYPES.join('/')} 组成的非空数组（动画 a、漫画 b、游戏 c、文学 d、诗词 i、哲学 k）`);
   const minLength = options.minLength ?? 8, maxLength = options.maxLength ?? 60;
   if (![minLength, maxLength].every(n => Number.isInteger(n) && n >= 0 && n <= 1200) || maxLength < minLength) fail('一言长度必须是 0–1200 的整数，且 maxLength ≥ minLength');
   const timeoutMs = options.timeoutMs ?? 10_000;

@@ -55,6 +55,17 @@ test('HTTP failure, invalid response and timeout are surfaced instead of fabrica
   await assert.rejects(prepareInput({ hitokoto: false }), /fields.quote/);
 });
 
+test('hitokoto categories default to a/b/c/d/i/k and reject anything else', async () => {
+  let requested;
+  const fetchImpl = async url => { requested = url; return { ok: true, json: async () => sentence }; };
+  await fetchSentence({}, { fetchImpl });
+  assert.deepEqual(requested.searchParams.getAll('c'), ['a', 'b', 'c', 'd', 'i', 'k']);
+  assert.deepEqual(parseInput({}).apiOptions.types, ['a', 'b', 'c', 'd', 'i', 'k']);
+  for (const type of ['e', 'f', 'g', 'h', 'j', 'l', 'z', 'A', '']) assert.throws(() => parseInput({ hitokoto: { types: [type] } }), /hitokoto.types/);
+  assert.throws(() => parseInput({ hitokoto: { types: [] } }), /hitokoto.types/);
+  assert.deepEqual(parseInput({ hitokoto: { types: ['k', 'a'] } }).apiOptions.types, ['k', 'a']);
+});
+
 test('wrapping preserves authored lines and content, including graphemes', () => {
   assert.equal(wrapQuote('第一行\r\n第二行', 0), '第一行\n第二行');
   const text = '风吹过城市的边缘，时间像纸页一样轻轻翻动。我们在写下句子的同时，也在慢慢辨认自己。';
