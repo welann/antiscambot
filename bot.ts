@@ -644,7 +644,7 @@ bot.command("start", async (ctx) => {
     "- /setlinktarget <link> 设置链接投稿频道",
     "- /setcalendartarget <link> 设置布告栏频道并立即发图",
     "- /calendarstatus    查看日历发送设置与状态",
-    "- /calendarnow       补发今日日历",
+    "- /calendarnow       强制重新发送今日日历",
     "- /stopcalendar      停止自动发送日历",
     "- /digestnow         立即发送一次摘要",
   );
@@ -870,8 +870,8 @@ bot.command("calendarstatus", async (ctx) => {
 
 bot.command("calendarnow", async (ctx) => {
   if (await rejectUnauthorizedDigestCommand(ctx)) return;
-  const result = await getCalendarService().run(new Date(), true);
-  return ctx.reply(formatCalendarResult(result));
+  const result = await getCalendarService().run(new Date(), { retryUncertain: true, force: true });
+  return ctx.reply(formatCalendarResult(result, true));
 });
 
 bot.command("stopcalendar", async (ctx) => {

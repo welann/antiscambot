@@ -83,7 +83,7 @@ test('ambiguous network failure is not resent automatically; explicit manual ret
     assert.equal((await service.configureAndSend(target, morning)).status, 'uncertain');
     assert.equal((await service.run(morning)).status, 'uncertain');
     assert.equal(sends, 1);
-    assert.equal((await service.run(morning, true)).status, 'sent');
+    assert.equal((await service.run(morning, { retryUncertain: true })).status, 'sent');
   } finally { repo.close(); }
 });
 
@@ -98,4 +98,19 @@ test('restart makes interrupted renders retryable but preserves uncertain sends'
     assert.equal(repo.getDelivery(target.chatId, '2026-09-14')?.status, 'uncertain');
     assert.equal(repo.claim(target.chatId, '2026-09-14', false), false);
   } finally { repo.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('manual /calendarnow forces a new photo even when today already sent', async () => {
+  const repo = new CalendarRepository(':memory:');
+  const rendered: string[] = []; let sends = 0;
+  const service = new CalendarService(repo, async date => { rendered.push(date); return image; }, async () => ++sends);
+  try {
+    assert.equal((await service.configureAndSend(target, morning)).status, 'sent');
+    assert.equal((await service.run(morning)).status, 'already-sent');
+    assert.equal(sends, 1);
+    assert.equal((await service.run(morning, { force: true })).status, 'sent');
+    assert.deepEqual(rendered, ['2026-09-13', '2026-09-13']);
+    assert.equal(sends, 2);
+    assert.equal(repo.getDelivery(target.chatId, '2026-09-13')?.message_id, 2);
+  } finally { repo.close(); }
 });

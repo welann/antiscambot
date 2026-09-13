@@ -18,6 +18,13 @@ export type CalendarResult = {
 // Telegram returned an explicit rejection: the request did not create a message.
 export class CalendarSendRejectedError extends Error {}
 
+export type CalendarRunOptions = {
+  // Manual retry of a send whose outcome is unknown (the bot never retries those on its own).
+  retryUncertain?: boolean;
+  // Manual resend: send a fresh photo even if today's edition already went out.
+  force?: boolean;
+};
+
 export class CalendarRepository {
   private readonly db: DatabaseSync;
   constructor(file: string) {
@@ -53,7 +60,13 @@ export class CalendarRepository {
   getDelivery(chatId: number, date: string): CalendarDelivery | null {
     return (this.db.prepare('SELECT * FROM calendar_deliveries WHERE chat_id=? AND local_date=?').get(chatId, date) as CalendarDelivery | undefined) ?? null;
   }
-  claim(chatId: number, date: string, retryUncertain: boolean): boolean {
+  claim(chatId: number, date: string, retryUncertain: boolean, force = false): boolean {
+    // A forced resend takes over today's record whatever it holds, so the day gets a new photo.
+    if (force) {
+      this.db.prepare(`INSERT INTO calendar_deliveries(chat_id, local_date, status) VALUES(?,?,'rendering')
+        ON CONFLICT(chat_id, local_date) DO UPDATE SET status='rendering',message_id=NULL,error=NULL`).run(chatId, date);
+      return true;
+    }
     const result = this.db.prepare(`INSERT INTO calendar_deliveries(chat_id, local_date, status) VALUES(?,?,'rendering')
       ON CONFLICT(chat_id, local_date) DO UPDATE SET status='rendering',error=NULL
       WHERE calendar_deliveries.status='failed' OR (?=1 AND calendar_deliveries.status='uncertain')`).run(chatId, date, Number(retryUncertain));
@@ -84,16 +97,17 @@ export class CalendarService {
     this.repository.stop();
   }
   async idle(): Promise<void> { await this.running; }
-  run(now = new Date(), retryUncertain = false): Promise<CalendarResult> {
+  run(now = new Date(), options: CalendarRunOptions = {}): Promise<CalendarResult> {
     if (this.running) return Promise.resolve({ status: 'busy' });
-    this.running = this.deliver(now, retryUncertain).finally(() => { this.running = null; });
+    const { retryUncertain = false, force = false } = options;
+    this.running = this.deliver(now, retryUncertain, force).finally(() => { this.running = null; });
     return this.running;
   }
-  private async deliver(now: Date, retryUncertain: boolean): Promise<CalendarResult> {
+  private async deliver(now: Date, retryUncertain: boolean, force: boolean): Promise<CalendarResult> {
     const target = this.repository.getTarget();
     if (!target) return { status: 'not-configured' };
     const date = calendarDate(now);
-    if (!this.repository.claim(target.chatId, date, retryUncertain)) {
+    if (!this.repository.claim(target.chatId, date, retryUncertain, force)) {
       const previous = this.repository.getDelivery(target.chatId, date);
       return { status: previous?.status === 'sent' ? 'already-sent' : previous?.status === 'uncertain' ? 'uncertain' : 'busy' };
     }
@@ -115,9 +129,11 @@ export class CalendarService {
   }
 }
 
-export function formatCalendarResult(result: CalendarResult): string {
+export function formatCalendarResult(result: CalendarResult, forced = false): string {
   switch (result.status) {
-    case 'sent': return '今日日历已发送，图片说明为 #布告栏。';
+    case 'sent': return forced
+      ? '已重新发送今日日历，图片说明为 #布告栏。频道里若已有今日日历会出现重复。'
+      : '今日日历已发送，图片说明为 #布告栏。';
     case 'already-sent': return '该频道今天已发送日历，不重复发送。';
     case 'not-configured': return '尚未设置布告栏频道，请先使用 /setcalendartarget <频道帖子链接>。';
     case 'busy': return '日历图片正在生成或发送，请稍后查看。';
