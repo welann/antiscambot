@@ -1,0 +1,22 @@
+{
+  "name": "paper-days-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./renderer.js",
+  "bin": {
+    "paper-days": "./generate.js"
+  },
+  "scripts": {
+    "generate": "node generate.js",
+    "test": "node --test tests/*.test.js",
+    "test:render": "node --test tests/render.integration.js",
+    "install:browser": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

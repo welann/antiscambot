@@ -1,5 +1,10 @@
 import "dotenv/config";
-import { Bot, Context } from "grammy";
+import { Bot, Context, GrammyError, InputFile } from "grammy";
+import {
+  CalendarRepository, CalendarService, CalendarSendRejectedError,
+  CALENDAR_CRON, CALENDAR_TIMEZONE, calendarDate, calendarIsDue,
+  formatCalendarResult, renderCalendarImage,
+} from "./calendar.js";
 import { schedule, validate } from "node-cron";
 import type { ScheduledTask } from "node-cron";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -67,6 +72,10 @@ type ReleaseNote = { version: string; summary: string };
 type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-09-13",
+    summary: "新增布告栏日历：设置频道立即发图，每天北京时间 08:00 自动发送 #布告栏",
+  },
   {
     version: "2026-08-18",
     summary: "投稿频道内的固定格式链接可直接编辑原消息，保留回复关系",
@@ -466,6 +475,25 @@ let BOT_ID: number | null = null;
 let digestRepository: DigestRepository | null = null;
 let digestService: DigestService | null = null;
 let digestTask: ScheduledTask | null = null;
+let calendarRepository: CalendarRepository | null = null;
+let calendarService: CalendarService | null = null;
+let calendarTask: ScheduledTask | null = null;
+
+function getCalendarService(): CalendarService {
+  if (!calendarService) throw new Error("日历服务尚未初始化");
+  return calendarService;
+}
+
+async function runScheduledCalendar(): Promise<void> {
+  try {
+    const result = await getCalendarService().run();
+    if (result.status !== "not-configured" && result.status !== "already-sent") {
+      console.log(`[calendar] ${formatCalendarResult(result)}`);
+    }
+  } catch (error) {
+    console.error("[calendar] 日历任务异常：", error);
+  }
+}
 
 function getDigestRepository(): DigestRepository {
   if (!digestRepository) throw new Error("摘要数据库尚未初始化");
@@ -487,7 +515,7 @@ function canManageDigest(ctx: Context): boolean {
 
 async function rejectUnauthorizedDigestCommand(ctx: Context): Promise<boolean> {
   if (canManageDigest(ctx)) return false;
-  await ctx.reply("无权限：频道摘要配置只能由全局管理员在 Bot 私聊中操作。");
+  await ctx.reply("无权限：频道配置只能由全局管理员在 Bot 私聊中操作。");
   return true;
 }
 
@@ -614,6 +642,10 @@ bot.command("start", async (ctx) => {
     "- /settarget <link>  设置摘要目标频道",
     "- /setsamplesize <数量> 设置每个来源频道每日抽样数量",
     "- /setlinktarget <link> 设置链接投稿频道",
+    "- /setcalendartarget <link> 设置布告栏频道并立即发图",
+    "- /calendarstatus    查看日历发送设置与状态",
+    "- /calendarnow       补发今日日历",
+    "- /stopcalendar      停止自动发送日历",
     "- /digestnow         立即发送一次摘要",
   );
 
@@ -809,6 +841,46 @@ bot.command("setlinktarget", async (ctx) => {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return ctx.reply(`设置链接投稿频道失败：${reason}`);
+  }
+});
+
+bot.command("setcalendartarget", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+  const links = ctx.match.trim().split(/\s+/).filter(Boolean);
+  if (links.length !== 1) return ctx.reply("用法：/setcalendartarget <目标频道任意帖子链接>");
+  try {
+    const channel = await resolveManagedChannel(links[0]!, true);
+    const task = getCalendarService().configureAndSend({ chatId: channel.chatId, title: channel.title });
+    const result = await task;
+    return ctx.reply(`已设置布告栏频道：${channel.title} (${channel.chatId})\n${formatCalendarResult(result)}\n此后每天北京时间 08:00 发送新日历。`);
+  } catch (error) {
+    return ctx.reply(`设置布告栏频道失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+bot.command("calendarstatus", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+  const repository = getCalendarService().repository;
+  const target = repository.getTarget();
+  if (!target) return ctx.reply("未设置布告栏频道。使用 /setcalendartarget <频道帖子链接> 开启。");
+  const delivery = repository.getDelivery(target.chatId, calendarDate());
+  const states: Record<string, string> = { rendering: "生成中", sending: "发送中", sent: "已发送", failed: "失败，可手动补发", uncertain: "结果不明，请检查频道后再手动补发" };
+  return ctx.reply(`布告栏频道：${target.title} (${target.chatId})\n时间：每天北京时间 08:00\n图片说明：#布告栏\n今日状态：${delivery ? states[delivery.status] : "尚未发送"}${delivery?.error ? `\n原因：${delivery.error}` : ""}`);
+});
+
+bot.command("calendarnow", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+  const result = await getCalendarService().run(new Date(), true);
+  return ctx.reply(formatCalendarResult(result));
+});
+
+bot.command("stopcalendar", async (ctx) => {
+  if (await rejectUnauthorizedDigestCommand(ctx)) return;
+  try {
+    getCalendarService().stop();
+    return ctx.reply("已停用自动日历发送。历史记录保留，可用 /setcalendartarget 重新开启。");
+  } catch (error) {
+    return ctx.reply(error instanceof Error ? error.message : String(error));
   }
 });
 
@@ -1079,8 +1151,23 @@ async function main(): Promise<void> {
     },
   );
 
+  calendarRepository = new CalendarRepository(DIGEST_DB_FILE);
+  calendarService = new CalendarService(calendarRepository, renderCalendarImage, async (target, image, caption) => {
+    try {
+      const message = await bot.api.sendPhoto(target, new InputFile(image, "daily-calendar.png"), { caption });
+      return message.message_id;
+    } catch (error) {
+      if (error instanceof GrammyError) throw new CalendarSendRejectedError(error.description);
+      throw error;
+    }
+  });
+  calendarTask = schedule(CALENDAR_CRON, runScheduledCalendar, {
+    timezone: CALENDAR_TIMEZONE, noOverlap: true, name: "daily-calendar-bulletin",
+  });
+
   const now = new Date();
   const today = getLocalDate(now, DIGEST_TIMEZONE);
+  if (calendarIsDue(now)) await runScheduledCalendar();
   if (
     shouldRunDailyCatchUp(DIGEST_CRON, DIGEST_TIMEZONE, now) &&
     !digestRepository.hasScheduledRun(today)
@@ -1091,6 +1178,9 @@ async function main(): Promise<void> {
   try {
     await bot.start();
   } finally {
+    await calendarTask.stop();
+    await calendarService.idle();
+    calendarRepository.close();
     await digestTask.stop();
     digestRepository.close();
   }

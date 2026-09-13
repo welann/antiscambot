@@ -12,6 +12,7 @@
 	"dependencies": {
 		"dotenv": "^17.2.3",
 		"grammy": "^1.39.3",
-		"node-cron": "^4.6.0"
+		"node-cron": "^4.6.0",
+		"playwright": "1.63.0"
 	}
 }

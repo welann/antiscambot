@@ -1,0 +1,13 @@
+{
+  "template": "minimal",
+  "date": "2026-09-13",
+  "hitokoto": false,
+  "fields": {
+    "quote": "把一页书读完，\n把一天过好。",
+    "bookTitle": "今日摘句",
+    "author": "匿名",
+    "footer": "Read the day. Write the self."
+  },
+  "scale": 2,
+  "output": "./calendar-studio/output/manual.png"
+}

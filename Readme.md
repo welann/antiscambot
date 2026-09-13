@@ -142,6 +142,42 @@ DIGEST_SAMPLE_SIZE="10"             # 仅用于首次初始化
 DIGEST_SEND_MAX_ATTEMPTS="3"      # 每个摘要分段最多发送次数
 ```
 
+## 布告栏日历
+
+全局管理员在 Bot 私聊中设置目标频道：
+
+```text
+/setcalendartarget https://t.me/your_channel/123
+```
+
+也支持私有频道帖子链接 `https://t.me/c/频道内部ID/消息ID`。Bot 必须是频道管理员且拥有发布消息权限。
+
+设置成功后立即获取一言、随机选择一款日历模板并发送 PNG，图片说明固定为 `#布告栏`。此后每天 **北京时间 08:00（Asia/Shanghai）** 发送当天的新日历。布告栏目标与摘要、链接投稿目标独立保存。
+
+| 命令 | 用途 |
+| --- | --- |
+| `/setcalendartarget <帖子链接>` | 设置频道并立即发送今日图片 |
+| `/calendarstatus` | 查看频道、发送时间、今日状态及失败原因 |
+| `/calendarnow` | 补发当天尚未成功发送的图片 |
+| `/stopcalendar` | 停用日历发送，保留历史记录 |
+
+以上命令仅全局管理员私聊可用。每天每个目标频道最多成功发送一次；重复设置同一频道或在当天重启不会重复发送。首次设置在 08:00 之前时，立即发送的图片计入当天，下一次自动发送为次日 08:00。更换频道会立即向新频道发送当天图片。
+
+配置和记录保存在 `DIGEST_DB_FILE` 数据库的 `calendar_config` / `calendar_deliveries` 表中。Bot 在 08:00 后启动时补发当天遗漏的图片，不补发更早日期。定时任务固定使用东八区，不受摘要模块的 `DIGEST_CRON` 或 `DIGEST_TIMEZONE` 影响。
+
+生成失败、Telegram 明确拒绝时，配置保留，可用 `/calendarnow` 重试。如果连接中断导致发送结果不明，Bot 不会自动重发；先检查频道，再在确认未收到时手动补发。失败会写入日志和状态。发送进行中不允许更改目标或停用，以避免图片发往过时频道。
+
+本地首次使用图片功能需要安装浏览器：
+
+```sh
+pnpm install
+pnpm exec playwright install chromium
+pnpm run build
+pnpm start
+```
+
+也可以设置 `CALENDAR_BROWSER_PATH` 指向现有 Chromium / Chrome 可执行文件。Dockerfile 已切换为 Debian，并安装 Chromium、中文字体及纸纹资源，容器中无需额外安装浏览器。频道图片使用 1122×1402 的 PNG，按 Telegram 图片发送（Telegram 可能压缩图片）。
+
 ## 代码架构
 
 ### 数据类型定义
@@ -206,6 +242,7 @@ type ScanCandidate = { source: MessageMatchSource; value: string };
 - `/settarget` - 设置摘要目标
 - `/setsamplesize <数量>` - 设置每个来源频道每日抽样数量（1-100）
 - `/setlinktarget <link>` - 设置固定格式链接投稿频道
+- `/setcalendartarget <link>` / `/calendarstatus` / `/calendarnow` / `/stopcalendar` - 管理布告栏日历
 - `/digestnow` - 手动执行摘要
 
 #### 8. 消息处理器
@@ -232,6 +269,7 @@ let BOT_ID: number | null = null;                 // Bot 自身 ID
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| 2026-09-13 | 新增布告栏日历，设置频道后立即发送，每天北京时间 08:00 自动发图 |
 | 2026-08-18 | 投稿频道内的固定格式链接可直接编辑原消息，保留回复关系 |
 | 2026-08-13 | 新增固定格式链接投稿，可发布带预览的频道超链接 |
 | 2026-08-02 | 摘要发送自动重试，并支持命令调整每日抽样数量 |

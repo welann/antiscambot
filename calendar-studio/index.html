@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>纸日 · 文学日历工作室</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23315f75'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-size='23' fill='white'%3E纸%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="studio.css">
+  <script defer src="assets/paper.js"></script>
+  <script defer src="templates.js"></script>
+  <script defer src="studio.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="./index.html" aria-label="纸日首页"><span class="brand-symbol" aria-hidden="true">纸</span><span>纸日<span class="brand-en">PAPER DAYS</span></span></a>
+    <span class="header-note">把值得留下的句子，印在日子里。</span>
+    <div class="header-actions"><span id="save-status">本地草稿</span><button class="icon-button" id="save-config" title="下载文字和样式配置">保存配置</button><button class="icon-button" id="load-config">载入配置</button><input type="file" id="config-file" accept=".json,application/json" hidden></div>
+  </header>
+  <main class="workspace">
+    <aside class="editor" aria-label="日历编辑器">
+      <div class="editor-intro"><span class="eyebrow">YOUR EVERYDAY EDITION</span><h1>写下今天。</h1><p>选一张版式，留一句喜欢的话。</p></div>
+      <section class="control-section">
+        <div class="section-heading"><h2>版式</h2><span>5 款纸上风格</span></div>
+        <div class="template-grid" id="template-grid" aria-label="选择模板"></div>
+      </section>
+      <section class="control-section">
+        <div class="section-heading"><h2>日期</h2><span>自动计算星期与周数</span></div>
+        <label class="field-label" for="date">选择日期</label><input type="date" id="date" value="2026-09-13" min="0001-01-01" max="9999-12-31">
+        <details class="detail-block"><summary>自定义日期文字 <span>年月日 / 星期 / 周数</span></summary><div class="field-grid" id="date-fields"></div></details>
+      </section>
+      <section class="control-section">
+        <div class="section-heading"><h2>今日摘句</h2><button class="text-button" id="placeholder-toggle" aria-pressed="false">查看占位符</button></div>
+        <label class="field-label" for="quote">摘句 <span>换行即分行，字号自动适配</span></label>
+        <textarea id="quote" rows="4" spellcheck="false" maxlength="1200"></textarea>
+        <div class="field-grid"><label>书名 / 出处<input id="bookTitle" type="text" maxlength="200"></label><label>作者<input id="author" type="text" maxlength="120"></label></div>
+        <label class="block-label">页脚文字<input id="footer" type="text" maxlength="240"></label>
+        <div class="field-grid"><label>期号 <span>报刊版式</span><input id="issue" type="text" maxlength="12"></label><div class="empty-note">留空的字段会显示<br><code>[PLACEHOLDER]</code></div></div>
+      </section>
+      <section class="control-section paper-controls">
+        <div class="section-heading"><h2>纸张</h2><output for="texture" id="texture-value">25%</output></div>
+        <label class="range-label" for="texture"><span>轻盈</span><input id="texture" type="range" min="0" max="70" value="25"><span>粗粝</span></label>
+        <p class="hint">使用你提供的纸纹，五款模板共享。</p>
+        <details class="detail-block"><summary>编辑装饰小字 <span>侧栏 / 标语</span></summary><div id="decorative-fields"></div></details>
+      </section>
+      <button class="reset-button" id="reset">恢复示例内容与样式</button>
+      <p class="privacy-note">内容仅保存在当前浏览器，不会上传。</p>
+    </aside>
+    <section class="preview-area" aria-label="日历实时预览">
+      <div class="preview-toolbar"><div><span class="live-dot"></span><span id="template-name">留白日历</span><span class="toolbar-divider">/</span><span class="muted">实时预览</span></div><button class="text-button" id="zoom-toggle" aria-pressed="false">放大查看</button></div>
+      <div class="preview-scroll" id="preview-scroll"><div class="preview-frame" id="preview-frame"><div id="preview"></div></div></div>
+      <div class="preview-caption"><span id="preview-mode">文学日历 · 01 / 05</span><span>4 : 5 <span class="caption-dot">·</span> 1122 × 1402 px</span></div>
+      <p id="fit-warning" class="fit-warning" hidden></p>
+      <div class="export-bar"><div class="export-copy"><strong>把今天收藏起来</strong><span>保留纸纹与排版，导出高清图片</span></div><div class="export-actions"><label class="sr-only" for="export-scale">导出分辨率</label><select id="export-scale"><option value="1">原尺寸 · 1122 × 1402</option><option value="2" selected>2 倍高清 · 2244 × 2804</option><option value="3">3 倍高清 · 3366 × 4206</option></select><button class="secondary-button" id="export-html" title="下载可离线打开的当前日历网页">导出 HTML</button><button class="primary-button" id="export-png"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M10 2v10m-4-4 4 4 4-4M3 13v4h14v-4"/></svg><span>导出 PNG</span></button></div></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

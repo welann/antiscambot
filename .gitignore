@@ -16,3 +16,8 @@ data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# 生成物与归档，不入库
+*.zip
+calendar-studio/output/
+.DS_Store

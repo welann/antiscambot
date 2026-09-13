@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "template": 0,
+  "date": "2026-09-13",
+  "fields": {
+    "month": "SEPTEMBER",
+    "day": "13",
+    "weekday": "星期日",
+    "fullDate": "2026 年 9 月 13 日",
+    "weekNo": "37",
+    "dayOfYear": "256 / 365",
+    "year": "2026",
+    "quote": "风吹过城市的边缘，时间像纸页一样轻轻翻动。\n我们在写下句子的同时，也在慢慢辨认自己。",
+    "bookTitle": "《今日摘句》",
+    "author": "匿名",
+    "footer": "Read the day. Write the self.",
+    "issue": "03"
+  },
+  "texture": 25,
+  "decorative": {},
+  "scale": 2
+}

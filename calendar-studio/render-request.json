@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-13",
+  "hitokoto": {
+    "types": ["d", "i", "k"],
+    "minLength": 8,
+    "maxLength": 60
+  },
+  "scale": 2,
+  "texture": 0.25,
+  "output": "./calendar-studio/output/daily.png"
+}

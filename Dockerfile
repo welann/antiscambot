@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS build
+FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -10,11 +10,15 @@ RUN corepack enable \
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-COPY bot.ts digest.ts link-submission.ts tsconfig.json ./
+COPY bot.ts digest.ts link-submission.ts calendar.ts tsconfig.json ./
 RUN pnpm exec tsc \
     && pnpm prune --prod
 
-FROM node:22-alpine AS runtime
+FROM node:22-bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium fonts-noto-cjk fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
     KEYWORDS_FILE=/app/data/keywords.txt \
@@ -23,7 +27,8 @@ ENV NODE_ENV=production \
     DIGEST_CRON="0 12 * * *" \
     DIGEST_TIMEZONE=Asia/Shanghai \
     DIGEST_SAMPLE_SIZE=10 \
-    DIGEST_SEND_MAX_ATTEMPTS=3
+    DIGEST_SEND_MAX_ATTEMPTS=3 \
+    CALENDAR_BROWSER_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
@@ -32,6 +37,9 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/bot.js ./bot.js
 COPY --from=build --chown=node:node /app/digest.js ./digest.js
 COPY --from=build --chown=node:node /app/link-submission.js ./link-submission.js
+COPY --from=build --chown=node:node /app/calendar.js ./calendar.js
+COPY --chown=node:node calendar-studio/renderer.js calendar-studio/input.js calendar-studio/templates.js ./calendar-studio/
+COPY --chown=node:node calendar-studio/assets/paper.png ./calendar-studio/assets/paper.png
 COPY --chown=node:node keywords.txt /app/defaults/keywords.txt
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 

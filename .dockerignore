@@ -2,6 +2,14 @@
 .gitignore
 .alma-snapshots
 node_modules
+**/node_modules
+calendar-studio/output
+calendar-studio/examples
+calendar-studio.zip
+calendar.js
+calendar.js.map
+calendar.d.ts
+calendar.d.ts.map
 
 .env
 .env.*
