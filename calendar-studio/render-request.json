@@ -1,7 +1,7 @@
 {
   "date": "2026-09-13",
   "hitokoto": {
-    "types": ["a", "b", "c", "d", "i", "k"],
+    "types": ["a", "b", "c", "d", "i"],
     "minLength": 15,
     "maxLength": 80
   },
