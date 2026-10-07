@@ -17,6 +17,56 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+export interface FormattedLinkMessage {
+  html: string;
+  chunks: string[];
+  count: number;
+  articleUrl: string;
+}
+
+// Keep commentary as plain text; only fixed-format lines become links.
+export function formatLinkSubmissionMessage(
+  input: string,
+  maxLength = DEFAULT_TELEGRAM_MESSAGE_LENGTH_LIMIT,
+): FormattedLinkMessage | null {
+  if (!Number.isSafeInteger(maxLength) || maxLength <= 0) {
+    throw new Error("maxLength must be a positive integer");
+  }
+  let count = 0;
+  let articleUrl = "";
+  const lines = input.split(/\r?\n/).map((rawLine) => {
+    if (!/\|\s*原文\s*\(/u.test(rawLine)) return escapeHtml(rawLine);
+    const line = rawLine.replace(/(https?)\\:\/\//gu, "$1://");
+    const entry = parseLinkSubmissionInput(line)[0]!;
+    count += 1;
+    articleUrl ||= entry.articleUrl;
+
+    // A hashtag followed by whitespace provides an explicit commentary boundary.
+    const prefix = /^(.*#[\p{L}\p{N}_]+)[\t ]+(\S.*)$/u.exec(entry.title);
+    if (prefix) {
+      entry.title = prefix[2]!;
+      return `${escapeHtml(prefix[1]!)}\n${formatEntry(entry)}`;
+    }
+    return formatEntry(entry);
+  });
+  if (!count) return null;
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const line of lines) {
+    if (line.length > maxLength) throw new Error("单行转换后超过 Telegram 消息长度限制");
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > maxLength) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) chunks.push(current);
+  return { html: lines.join("\n"), chunks, count, articleUrl };
+}
+
 function validateUrl(value: string, lineNumber: number, label: string): string {
   try {
     const url = new URL(value);

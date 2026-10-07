@@ -9,10 +9,9 @@ import { schedule, validate } from "node-cron";
 import type { ScheduledTask } from "node-cron";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  formatLinkSubmissionChunks,
-  parseLinkSubmissionInput,
-} from "./link-submission.js";
+import { formatLinkSubmissionMessage } from "./link-submission.js";
+import { convertChannelLinks, deleteWithNotice } from "./message-handling.js";
+import type { Message } from "grammy/types";
 import {
   DigestRepository,
   DigestService,
@@ -72,6 +71,10 @@ type ReleaseNote = { version: string; summary: string };
 type KeywordEntry = { canonical: string; raw: string };
 
 const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: "2026-10-08",
+    summary: "删除提示保留回复位置；所有可编辑频道转换链接并保留附言；新增 /clearkw 清空关键词",
+  },
   {
     version: "2026-09-13",
     summary: "新增布告栏日历：设置频道立即发图，每天北京时间 08:00 自动发送 #布告栏",
@@ -276,6 +279,17 @@ async function removeKeywordFromUserInput(
 
 function getAllKeywords(): string[] {
   return Array.from(keywordMap.values());
+}
+
+async function clearAllKeywords(): Promise<number> {
+  return queueKeywordFileOp(async () => {
+    const count = keywordMap.size;
+    await ensureKeywordsFile();
+    await writeFile(KEYWORDS_FILE, "", "utf8");
+    keywordMap.clear();
+    rebuildKeywordEntries();
+    return count;
+  });
 }
 
 function findMatchedKeyword(text: string): string | null {
@@ -635,6 +649,7 @@ bot.command("start", async (ctx) => {
     "Commands:",
     "- /addkw <keyword>  添加待检测关键字 (管理员)",
     "- /delkw <keyword>  删除关键字 (管理员)",
+    "- /clearkw          删除全部关键字 (管理员，全局生效)",
     "- /keywords         查看所有关键字",
     "- /addsource <links> 添加摘要来源频道 (全局管理员私聊)",
     "- /sources           查看摘要来源与目标",
@@ -690,6 +705,18 @@ bot.command("delkw", async (ctx) => {
   }
 
   return ctx.reply(`已删除关键字：${result.keyword}`);
+});
+
+bot.command("clearkw", async (ctx) => {
+  if (!(await canManageKeywords(ctx))) {
+    return ctx.reply("无权限：仅群管理员或全局管理员可清空关键词。");
+  }
+  try {
+    const count = await clearAllKeywords();
+    return ctx.reply(`已删除全部 ${count} 个关键词，对所有群聊生效。`);
+  } catch (error) {
+    return ctx.reply(`清空关键词失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 });
 
 bot.command("keywords", (ctx) => {
@@ -932,17 +959,17 @@ async function handleLinkSubmission(ctx: Context): Promise<void> {
   }
 
   try {
-    const entries = parseLinkSubmissionInput(message.text);
-    const chunks = formatLinkSubmissionChunks(entries);
+    const formatted = formatLinkSubmissionMessage(message.text);
+    if (!formatted) return;
     let sentMessages = 0;
-    for (const chunk of chunks) {
+    for (const chunk of formatted.chunks) {
       await ctx.api.sendMessage(target.chatId, chunk, {
         parse_mode: "HTML",
       });
       sentMessages += 1;
     }
     await ctx.reply(
-      `已发布 ${entries.length} 条链接到 ${target.title}（${sentMessages} 条频道消息）。`,
+      `已发布 ${formatted.count} 条链接到 ${target.title}（${sentMessages} 条频道消息）。`,
     );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -950,153 +977,82 @@ async function handleLinkSubmission(ctx: Context): Promise<void> {
   }
 }
 
+async function moderateGroupMessage(ctx: Context, message: Message, edited = false): Promise<void> {
+  if (BOT_ID !== null && ctx.from?.id === BOT_ID) return;
+  if (message.chat.type !== "group" && message.chat.type !== "supergroup") return;
+
+  const isCommand =
+    typeof message.text === "string" &&
+    !!message.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
+  if (isCommand) return;
+
+  const candidates = collectMessageScanCandidates(message, ctx.from?.username);
+  if (!candidates.length) return;
+
+  const match = findMatchedKeywordInCandidates(candidates);
+  if (!match) return;
+
+  const offender = ctx.from?.username
+    ? `@${ctx.from.username}`
+    : ctx.from?.id
+      ? `user:${ctx.from.id}`
+      : "unknown";
+
+  const preview = buildMessagePreview(message);
+
+  const successLines = [
+    `已删除一条消息（${edited ? "编辑后" : ""}命中关键字：${match.keyword}）`,
+    `发送者：${offender}`,
+    `命中位置：${describeMatchSource(match.source)}`,
+    `命中内容：${truncateForNotice(match.value, 120)}`,
+  ];
+  if (preview && preview !== match.value) {
+    successLines.push(`消息预览：${truncateForNotice(preview, 120)}`);
+  }
+
+  await deleteWithNotice(ctx.api, message, successLines.join("\n"), (reason) => {
+    const failureLines = [
+      `检测到${edited ? "编辑后的消息" : ""}关键字命中（${match.keyword}），但删除失败。`,
+      "请确认机器人在群里拥有“删除消息”的管理员权限。",
+      `发送者：${offender}`,
+      `命中位置：${describeMatchSource(match.source)}`,
+      `命中内容：${truncateForNotice(match.value, 120)}`,
+      `错误：${reason}`,
+    ];
+    if (preview && preview !== match.value) {
+      failureLines.splice(5, 0, `消息预览：${truncateForNotice(preview, 120)}`);
+    }
+
+    return failureLines.join("\n");
+  });
+}
+
 bot.on("message", async (ctx) => {
   if (BOT_ID !== null && ctx.from?.id === BOT_ID) return;
-  if (!ctx.chat || !ctx.message) return;
   if (ctx.chat.type === "private") {
     await handleLinkSubmission(ctx);
     return;
   }
-  if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
-
-  const isCommand =
-    typeof ctx.message.text === "string" &&
-    !!ctx.message.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
-  if (isCommand) return;
-
-  const candidates = collectMessageScanCandidates(ctx.message, ctx.from?.username);
-  if (!candidates.length) return;
-
-  const match = findMatchedKeywordInCandidates(candidates);
-  if (!match) return;
-
-  const offender = ctx.from?.username
-    ? `@${ctx.from.username}`
-    : ctx.from?.id
-      ? `user:${ctx.from.id}`
-      : "unknown";
-
-  const preview = buildMessagePreview(ctx.message);
-
-  const successLines = [
-    `已删除一条消息（命中关键字：${match.keyword}）`,
-    `发送者：${offender}`,
-    `命中位置：${describeMatchSource(match.source)}`,
-    `命中内容：${truncateForNotice(match.value, 120)}`,
-  ];
-  if (preview && preview !== match.value) {
-    successLines.push(`消息预览：${truncateForNotice(preview, 120)}`);
-  }
-
-  try {
-    await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id);
-    await ctx.api.sendMessage(ctx.chat.id, successLines.join("\n"));
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-
-    const failureLines = [
-      `检测到关键字命中（${match.keyword}），但删除失败。`,
-      "请确认机器人在群里拥有“删除消息”的管理员权限。",
-      `发送者：${offender}`,
-      `命中位置：${describeMatchSource(match.source)}`,
-      `命中内容：${truncateForNotice(match.value, 120)}`,
-      `错误：${reason}`,
-    ];
-    if (preview && preview !== match.value) {
-      failureLines.splice(5, 0, `消息预览：${truncateForNotice(preview, 120)}`);
-    }
-
-    await ctx.api.sendMessage(ctx.chat.id, failureLines.join("\n"));
-  }
+  await moderateGroupMessage(ctx, ctx.message);
 });
 
 bot.on("edited_message", async (ctx) => {
-  if (BOT_ID !== null && ctx.from?.id === BOT_ID) return;
-  if (!ctx.chat || !ctx.editedMessage) return;
-  if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
-
-  const isCommand =
-    typeof ctx.editedMessage.text === "string" &&
-    !!ctx.editedMessage.entities?.some((e) => e.type === "bot_command" && e.offset === 0);
-  if (isCommand) return;
-
-  const candidates = collectMessageScanCandidates(ctx.editedMessage, ctx.from?.username);
-  if (!candidates.length) return;
-
-  const match = findMatchedKeywordInCandidates(candidates);
-  if (!match) return;
-
-  const offender = ctx.from?.username
-    ? `@${ctx.from.username}`
-    : ctx.from?.id
-      ? `user:${ctx.from.id}`
-      : "unknown";
-
-  const preview = buildMessagePreview(ctx.editedMessage);
-
-  const successLines = [
-    `已删除一条消息（编辑后命中关键字：${match.keyword}）`,
-    `发送者：${offender}`,
-    `命中位置：${describeMatchSource(match.source)}`,
-    `命中内容：${truncateForNotice(match.value, 120)}`,
-  ];
-  if (preview && preview !== match.value) {
-    successLines.push(`消息预览：${truncateForNotice(preview, 120)}`);
-  }
-
-  try {
-    await ctx.api.deleteMessage(ctx.chat.id, ctx.editedMessage.message_id);
-    await ctx.api.sendMessage(ctx.chat.id, successLines.join("\n"));
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-
-    const failureLines = [
-      `检测到编辑后的消息命中关键字（${match.keyword}），但删除失败。`,
-      "请确认机器人在群里拥有“删除消息”的管理员权限。",
-      `发送者：${offender}`,
-      `命中位置：${describeMatchSource(match.source)}`,
-      `命中内容：${truncateForNotice(match.value, 120)}`,
-      `错误：${reason}`,
-    ];
-    if (preview && preview !== match.value) {
-      failureLines.splice(5, 0, `消息预览：${truncateForNotice(preview, 120)}`);
-    }
-
-    await ctx.api.sendMessage(ctx.chat.id, failureLines.join("\n"));
-  }
+  await moderateGroupMessage(ctx, ctx.editedMessage, true);
 });
 
-bot.on("channel_post", (ctx) => {
+async function handleChannelLinks(ctx: Context, message: Message): Promise<void> {
+  if (BOT_ID === null) return;
+  try {
+    await convertChannelLinks(ctx.api, message, BOT_ID);
+  } catch (error) {
+    console.error(`[link-submission] 频道 ${message.chat.id} 消息 ${message.message_id} 转换失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+bot.on("channel_post", async (ctx) => {
+  await handleChannelLinks(ctx, ctx.channelPost);
   const repository = digestRepository;
   if (!repository) return;
-
-  const linkSubmissionTarget = repository.getLinkSubmissionTarget();
-  const message = ctx.channelPost;
-  if (
-    linkSubmissionTarget?.chatId === ctx.chat.id &&
-    typeof message.text === "string" &&
-    /\|\s*原文\s*\(/u.test(message.text)
-  ) {
-    try {
-      const entries = parseLinkSubmissionInput(message.text);
-      const chunks = formatLinkSubmissionChunks(entries);
-      if (chunks.length !== 1) {
-        throw new Error("内容超过单条 Telegram 消息长度，无法保留原回复关系");
-      }
-      const html = chunks[0];
-      if (!html) throw new Error("未生成可编辑的链接内容");
-
-      void ctx.api.editMessageText(ctx.chat.id, message.message_id, html, {
-        parse_mode: "HTML",
-      }).catch((error) => {
-        const reason = error instanceof Error ? error.message : String(error);
-        console.error(`[link-submission] 编辑频道消息失败：${reason}`);
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error(`[link-submission] 跳过频道消息转换：${reason}`);
-    }
-  }
 
   const updated = repository.updateLatestMessageId(
     ctx.chat.id,
@@ -1107,6 +1063,10 @@ bot.on("channel_post", (ctx) => {
       `[digest] 已更新来源频道 ${ctx.chat.title} 的最新消息 ID：${ctx.channelPost.message_id}`,
     );
   }
+});
+
+bot.on("edited_channel_post", async (ctx) => {
+  await handleChannelLinks(ctx, ctx.editedChannelPost);
 });
 
 async function main(): Promise<void> {
@@ -1176,7 +1136,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    await bot.start();
+    await bot.start({ allowed_updates: ["message", "edited_message", "channel_post", "edited_channel_post"] });
   } finally {
     await calendarTask.stop();
     await calendarService.idle();
