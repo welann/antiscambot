@@ -71,13 +71,38 @@ test("rejects malformed and oversized conversions before editing", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("deletion notice replies to the parent in the same forum topic", async () => {
+test("sends standalone details before a short reply in the same forum topic", async () => {
   const { api, calls } = mockApi();
   await deleteWithNotice(api, { ...message, is_topic_message: true, message_thread_id: 7 }, "deleted", () => "failed");
-  assert.deepEqual(calls.map((call) => call.method), ["deleteMessage", "sendMessage"]);
-  assert.deepEqual(calls[1]?.payload.reply_parameters, { message_id: 10, allow_sending_without_reply: true });
+  assert.deepEqual(calls.map((call) => call.method), ["deleteMessage", "sendMessage", "sendMessage"]);
+  assert.equal(calls[1]?.payload.reply_parameters, undefined);
   assert.equal(calls[1]?.payload.message_thread_id, 7);
   assert.equal(calls[1]?.payload.text, "deleted");
+  assert.deepEqual(calls[1]?.payload.link_preview_options, { is_disabled: true });
+  assert.deepEqual(calls[2]?.payload.reply_parameters, { message_id: 10, allow_sending_without_reply: true });
+  assert.equal(calls[2]?.payload.message_thread_id, 7);
+  assert.equal(calls[2]?.payload.text, "已删除一条消息");
+});
+
+test("channel comments get standalone details in the discussion group and only a short reply", async () => {
+  const { api, calls } = mockApi();
+  await deleteWithNotice(api, { ...message, chat: { id: -100789, type: "supergroup", title: "Discussion" }, message_thread_id: 10 }, "details", () => "failed");
+  assert.equal(calls[1]?.payload.chat_id, -100789);
+  assert.equal(calls[1]?.payload.reply_parameters, undefined);
+  assert.equal(calls[1]?.payload.message_thread_id, undefined);
+  assert.equal(calls[2]?.payload.chat_id, -100789);
+  assert.equal(calls[2]?.payload.text, "已删除一条消息");
+  assert.equal(calls[2]?.payload.message_thread_id, undefined);
+  assert.deepEqual(calls[2]?.payload.reply_parameters, { message_id: 10, allow_sending_without_reply: true });
+});
+
+test("standalone messages produce only the detailed notice", async () => {
+  const { api, calls } = mockApi();
+  const { reply_to_message, ...standalone } = message;
+  await deleteWithNotice(api, standalone, "details", () => "failed");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.payload.text, "details");
+  assert.equal(calls[1]?.payload.reply_parameters, undefined);
 });
 
 test("deletion failures reply to the still-existing offending message", async () => {
@@ -85,6 +110,7 @@ test("deletion failures reply to the still-existing offending message", async ()
   await deleteWithNotice(api, message, "deleted", (reason) => `failed: ${reason}`);
   assert.deepEqual(calls[1]?.payload.reply_parameters, { message_id: 42, allow_sending_without_reply: true });
   assert.equal(calls[1]?.payload.text, "failed: simulated failure");
+  assert.equal(calls.length, 2);
 });
 
 test("notice failure is not mislabeled or retried as a deletion failure", async () => {
@@ -92,7 +118,8 @@ test("notice failure is not mislabeled or retried as a deletion failure", async 
   let failedDeletion = false;
   await assert.rejects(deleteWithNotice(api, message, "deleted", () => { failedDeletion = true; return "failed"; }));
   assert.equal(failedDeletion, false);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2]?.payload.text, "已删除一条消息");
 });
 
 test("standalone deletions do not reply to a deleted message; comments keep their parent", () => {

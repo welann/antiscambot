@@ -65,5 +65,22 @@ export async function deleteWithNotice(
     notice = failureText(error instanceof Error ? error.message : String(error));
   }
   // A notice failure must not be reported as a deletion failure.
-  await api.sendMessage(message.chat.id, notice, replyLocation(message, !deleted));
+  if (!deleted) {
+    await api.sendMessage(message.chat.id, notice, replyLocation(message, true));
+    return;
+  }
+
+  const location = replyLocation(message);
+  const { reply_parameters, ...standaloneLocation } = location;
+  try {
+    await api.sendMessage(message.chat.id, notice, {
+      ...standaloneLocation,
+      link_preview_options: { is_disabled: true },
+    });
+  } finally {
+    // Keep the short thread notice even if sending the detailed record fails.
+    if (reply_parameters || location.message_thread_id !== undefined) {
+      await api.sendMessage(message.chat.id, "已删除一条消息", location);
+    }
+  }
 }

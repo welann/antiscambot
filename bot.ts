@@ -73,7 +73,7 @@ type KeywordEntry = { canonical: string; raw: string };
 const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: "2026-10-08",
-    summary: "删除提示保留回复位置；所有可编辑频道转换链接并保留附言；新增 /clearkw 清空关键词",
+    summary: "删除详情独立发送，原回复位置仅显示简短提示；所有可编辑频道转换链接并保留附言；新增 /clearkw 清空关键词",
   },
   {
     version: "2026-09-13",
