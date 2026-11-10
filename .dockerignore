@@ -2,6 +2,8 @@
 .gitignore
 .alma-snapshots
 node_modules
+dist
+.pnpm-store
 **/node_modules
 calendar-studio/output
 calendar-studio/examples

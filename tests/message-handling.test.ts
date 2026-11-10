@@ -3,6 +3,35 @@ import { test } from "node:test";
 import { Api } from "grammy";
 import type { Message } from "grammy/types";
 import { convertChannelLinks, deleteWithNotice, replyLocation } from "../message-handling.js";
+import { findBotTripletMatch } from "../moderation/rules.js";
+
+test("matches exactly three whitespace-separated parts with a leading bot mention", () => {
+  for (const text of [
+    "@dgsfhugihfsiobot campaign_001 g1794325948903a87b4cf3",
+    "@examplebot 中文 任意内容",
+    "@Example_BOT ! https://example.com",
+    "  @examplebot   a\tb\n",
+    "@examplebot\n第一段\n第二段",
+  ]) {
+    assert.deepEqual(findBotTripletMatch({ text }), { source: "text", value: text });
+  }
+  for (const text of [
+    "", "@examplebot", "@examplebot one", "@examplebot one two three",
+    "前文 @examplebot one two", "hello @examplebot two", "examplebot one two",
+    "@someone one two", "@examplebot, one two", "@bad-namebot one two",
+  ]) {
+    assert.equal(findBotTripletMatch({ text }), null, text);
+  }
+});
+
+test("checks media captions but not usernames or button text", () => {
+  const caption = "@examplebot x y";
+  assert.deepEqual(findBotTripletMatch({ caption }), { source: "caption", value: caption });
+  assert.equal(findBotTripletMatch({}), null);
+  const unrelatedMessage = { text: "ordinary", from: { username: "examplebot" },
+    reply_markup: { inline_keyboard: [[{ text: caption }]] } };
+  assert.equal(findBotTripletMatch(unrelatedMessage), null);
+});
 
 const link = "附言#话题 标题 (https://telegra.ph/a) | 原文 (https://example.com/a)";
 const message: Message = {

@@ -1,9 +1,10 @@
 {
 	"type": "module",
 	"scripts": {
-		"build": "tsc",
-		"start": "node bot.js",
-		"test": "pnpm run build && node --test tests/*.test.js"
+		"build": "tsc -p tsconfig.build.json",
+		"start": "node dist/bot.js",
+		"typecheck": "tsc --noEmit",
+		"test": "tsc && node --test dist/tests/*.test.js && node --test calendar-studio/tests/*.test.js"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",

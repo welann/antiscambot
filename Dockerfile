@@ -10,8 +10,14 @@ RUN corepack enable \
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-COPY bot.ts digest.ts link-submission.ts message-handling.ts calendar.ts tsconfig.json ./
-RUN pnpm exec tsc \
+COPY *.ts tsconfig*.json ./
+COPY app/ ./app/
+COPY commands/ ./commands/
+COPY digest/ ./digest/
+COPY moderation/ ./moderation/
+COPY shared/ ./shared/
+COPY storage/ ./storage/
+RUN pnpm run build \
     && pnpm prune --prod
 
 FROM node:22-bookworm-slim AS runtime
@@ -34,11 +40,7 @@ WORKDIR /app
 
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
-COPY --from=build --chown=node:node /app/bot.js ./bot.js
-COPY --from=build --chown=node:node /app/digest.js ./digest.js
-COPY --from=build --chown=node:node /app/link-submission.js ./link-submission.js
-COPY --from=build --chown=node:node /app/message-handling.js ./message-handling.js
-COPY --from=build --chown=node:node /app/calendar.js ./calendar.js
+COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node calendar-studio/renderer.js calendar-studio/input.js calendar-studio/templates.js ./calendar-studio/
 COPY --chown=node:node calendar-studio/assets/paper.png ./calendar-studio/assets/paper.png
 COPY --chown=node:node keywords.txt /app/defaults/keywords.txt
@@ -53,4 +55,4 @@ USER node
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-CMD ["node", "bot.js"]
+CMD ["node", "dist/bot.js"]

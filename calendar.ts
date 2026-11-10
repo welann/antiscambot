@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { getLocalDate, shouldRunDailyCatchUp } from './digest.js';
+import { getLocalDate, shouldRunDailyCatchUp } from './shared/time.js';
 
 export const CALENDAR_CRON = '0 8 * * *';
 export const CALENDAR_TIMEZONE = 'Asia/Shanghai';
@@ -144,7 +144,7 @@ export function formatCalendarResult(result: CalendarResult, forced = false): st
 
 export async function renderCalendarImage(date: string): Promise<Uint8Array> {
   // Load only when configured, so the rest of the bot can boot without a browser.
-  const moduleUrl = new URL('./calendar-studio/renderer.js', import.meta.url).href;
+  const moduleUrl = new URL('../calendar-studio/renderer.js', import.meta.url).href;
   const renderer = await import(moduleUrl) as {
     generateImage(input: { date: string; scale: number }): Promise<{ buffer: Uint8Array }>;
   };
