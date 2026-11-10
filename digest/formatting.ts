@@ -105,14 +105,14 @@ export function formatDigestChunks(
     0,
   );
   const baseHeaderHtml =
-    `<b>📚 每日频道历史随机精选</b>\n` +
+    `<b>📚 每日频道历史精选</b>\n` +
     `<i>${escapeHtml(localDate)} · 共 ${totalItems} 条</i>`;
-  const baseHeaderText = `📚 每日频道历史随机精选\n${localDate} · 共 ${totalItems} 条`;
+  const baseHeaderText = `📚 每日频道历史精选\n${localDate} · 共 ${totalItems} 条`;
   const continuationHeaderHtml =
-    `<b>📚 每日频道历史随机精选（续）</b>\n` +
+    `<b>📚 每日频道历史精选（续）</b>\n` +
     `<i>${escapeHtml(localDate)} · 共 ${totalItems} 条</i>`;
   const continuationHeaderText =
-    `📚 每日频道历史随机精选（续）\n${localDate} · 共 ${totalItems} 条`;
+    `📚 每日频道历史精选（续）\n${localDate} · 共 ${totalItems} 条`;
 
   const chunks: DigestChunk[] = [];
   let currentHtml = baseHeaderHtml;

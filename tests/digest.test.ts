@@ -105,17 +105,98 @@ describe("Telegram message link parsing", () => {
   });
 });
 
-describe("random selection", () => {
-  test("selects only unused IDs and handles exhaustion", () => {
-    const sequence = [0, 1, 2];
-    const selected = selectUnusedMessageIds(
-      5,
-      new Set([2, 4]),
-      10,
-      () => sequence.shift() ?? 0,
-    );
-    assert.deepEqual(selected, [1, 3, 5]);
+function minimumPairDistance(ids: number[]): number {
+  const sorted = [...ids].sort((a, b) => a - b);
+  let minimum = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < sorted.length; index += 1) {
+    minimum = Math.min(minimum, sorted[index]! - sorted[index - 1]!);
+  }
+  return minimum;
+}
+
+function bruteForceSpacing(
+  maxMessageId: number,
+  usedIds: number[],
+  pointCount: number,
+): number {
+  const used = new Set(usedIds);
+  const free = Array.from(
+    { length: maxMessageId },
+    (_, index) => index + 1,
+  ).filter((id) => !used.has(id));
+  const selected: number[] = [];
+  let best = 0;
+
+  function visit(start: number): void {
+    if (selected.length === pointCount) {
+      best = Math.max(best, minimumPairDistance([...usedIds, ...selected]));
+      return;
+    }
+    for (let index = start; index < free.length; index += 1) {
+      selected.push(free[index]!);
+      visit(index + 1);
+      selected.pop();
+    }
+  }
+
+  visit(0);
+  return best;
+}
+
+describe("maximin selection", () => {
+  test("places new IDs in the widest free gaps", () => {
+    assert.deepEqual(selectUnusedMessageIds(10, new Set([2, 4]), 3), [6, 8, 10]);
+    assert.deepEqual(selectUnusedMessageIds(10, new Set(), 3), [1, 5, 10]);
+    assert.deepEqual(selectUnusedMessageIds(10, new Set([5]), 4), [1, 3, 7, 10]);
     assert.deepEqual(selectUnusedMessageIds(2, new Set([1, 2]), 10), []);
+
+    const sparseUsed = new Set(
+      Array.from({ length: 10 }, (_, index) => index * 5 + 1),
+    );
+    assert.deepEqual(
+      selectUnusedMessageIds(100, sparseUsed, 3),
+      [64, 82, 100],
+    );
+  });
+
+  test("spreads equal-width gaps across the range", () => {
+    const evenlyUsed = new Set(
+      Array.from({ length: 100 }, (_, index) => (index + 1) * 10),
+    );
+    const selected = selectUnusedMessageIds(1000, evenlyUsed, 10);
+    assert.ok(selected.at(-1)! - selected[0]! > 500);
+  });
+
+  test("matches brute-force maximum spacing on small ranges", () => {
+    const cases: { maxMessageId: number; usedIds: number[]; count: number }[] = [
+      { maxMessageId: 8, usedIds: [], count: 3 },
+      { maxMessageId: 9, usedIds: [2, 6], count: 3 },
+      { maxMessageId: 10, usedIds: [1, 4, 9], count: 4 },
+      { maxMessageId: 7, usedIds: [3], count: 2 },
+      { maxMessageId: 12, usedIds: [6], count: 4 },
+      { maxMessageId: 6, usedIds: [], count: 6 },
+    ];
+
+    for (const { maxMessageId, usedIds, count } of cases) {
+      const selected = selectUnusedMessageIds(
+        maxMessageId,
+        new Set(usedIds),
+        count,
+      );
+      assert.equal(
+        selected.length,
+        Math.min(count, maxMessageId - usedIds.length),
+      );
+      assert.equal(selected.some((id) => usedIds.includes(id)), false);
+      assert.equal(
+        minimumPairDistance([...usedIds, ...selected]),
+        bruteForceSpacing(maxMessageId, usedIds, selected.length),
+      );
+      assert.deepEqual(
+        selectUnusedMessageIds(maxMessageId, new Set(usedIds), count),
+        selected,
+      );
+    }
   });
 });
 

@@ -1,5 +1,3 @@
-import { randomInt } from "node:crypto";
-
 import { buildTelegramMessageLink, formatDigestChunks } from "./formatting.js";
 import type { DigestRepository } from "./repository.js";
 import { MAX_DIGEST_SAMPLE_SIZE } from "./types.js";
@@ -27,48 +25,157 @@ function waitForRetry(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-function upperBound(sortedValues: number[], target: number): number {
-  let low = 0;
-  let high = sortedValues.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    const value = sortedValues[middle];
-    if (value !== undefined && value <= target) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
-}
+type FreeGap = {
+  left: number | null;
+  right: number | null;
+  start: number;
+  end: number;
+};
 
-function availableIdAtRank(
-  rank: number,
+function buildFreeGaps(
   maxMessageId: number,
   usedSorted: number[],
+): FreeGap[] {
+  if (!usedSorted.length) {
+    return [{ left: null, right: null, start: 1, end: maxMessageId }];
+  }
+
+  const gaps: FreeGap[] = [];
+  const first = usedSorted[0]!;
+  if (first > 1) {
+    gaps.push({ left: null, right: first, start: 1, end: first - 1 });
+  }
+
+  for (let index = 0; index + 1 < usedSorted.length; index += 1) {
+    const left = usedSorted[index]!;
+    const right = usedSorted[index + 1]!;
+    if (right - left > 1) {
+      gaps.push({ left, right, start: left + 1, end: right - 1 });
+    }
+  }
+
+  const last = usedSorted[usedSorted.length - 1]!;
+  if (last < maxMessageId) {
+    gaps.push({ left: last, right: null, start: last + 1, end: maxMessageId });
+  }
+  return gaps;
+}
+
+function gapCapacity(gap: FreeGap, spacing: number): number {
+  const freeCount = gap.end - gap.start + 1;
+  if (gap.left === null && gap.right === null) {
+    return Math.floor((freeCount - 1) / spacing) + 1;
+  }
+  if (gap.left === null || gap.right === null) {
+    return Math.floor(freeCount / spacing);
+  }
+  return Math.max(0, Math.floor((freeCount + 1) / spacing) - 1);
+}
+
+function totalCapacity(
+  gaps: FreeGap[],
+  spacing: number,
+  pointCount: number,
+): number {
+  let total = 0;
+  for (const gap of gaps) {
+    total += gapCapacity(gap, spacing);
+    if (total >= pointCount) return total;
+  }
+  return total;
+}
+
+function maximumSpacing(
+  gaps: FreeGap[],
+  pointCount: number,
+  maxMessageId: number,
 ): number {
   let low = 1;
   let high = maxMessageId;
-  const desiredCount = rank + 1;
-
   while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    const usedThroughMiddle = upperBound(usedSorted, middle);
-    const availableThroughMiddle = middle - usedThroughMiddle;
-    if (availableThroughMiddle >= desiredCount) {
-      high = middle;
+    const middle = low + Math.ceil((high - low) / 2);
+    if (totalCapacity(gaps, middle, pointCount) >= pointCount) {
+      low = middle;
     } else {
-      low = middle + 1;
+      high = middle - 1;
     }
   }
   return low;
 }
 
+// Break equal-width ties with a bit-reversal order so one batch spreads across
+// the channel instead of filling the first gaps.
+function spreadRank(index: number, count: number): number {
+  let bits = 0;
+  while (1 << bits < count) bits += 1;
+  let value = index;
+  let rank = 0;
+  for (let bit = 0; bit < bits; bit += 1) {
+    rank = (rank << 1) | (value & 1);
+    value >>= 1;
+  }
+  return rank;
+}
+
+function allocateGapPoints(
+  gaps: FreeGap[],
+  capacities: number[],
+  pointCount: number,
+): number[] {
+  const counts = new Array<number>(gaps.length).fill(0);
+  const ranks = gaps.map((_, index) => spreadRank(index, gaps.length));
+  const order = gaps
+    .map((_, index) => index)
+    .sort((a, b) => {
+      const freeA = gaps[a]!.end - gaps[a]!.start;
+      const freeB = gaps[b]!.end - gaps[b]!.start;
+      return freeB - freeA || ranks[a]! - ranks[b]!;
+    });
+
+  let remaining = pointCount;
+  while (remaining > 0) {
+    let added = false;
+    for (const index of order) {
+      if (remaining === 0) break;
+      if (counts[index]! < capacities[index]!) {
+        counts[index] = counts[index]! + 1;
+        remaining -= 1;
+        added = true;
+      }
+    }
+    if (!added) throw new Error("无法分配摘要抽样序号");
+  }
+  return counts;
+}
+
+function placeGapPoints(
+  gap: FreeGap,
+  count: number,
+  spacing: number,
+  maxMessageId: number,
+): number[] {
+  if (count === 0) return [];
+
+  const low = gap.left === null ? 1 : gap.left + spacing;
+  const high = gap.right === null ? maxMessageId : gap.right - spacing;
+  if (count === 1) {
+    return [low + Math.floor((high - low) / 2)];
+  }
+
+  const span = high - low;
+  return Array.from(
+    { length: count },
+    (_, index) => low + Math.floor((index * span) / (count - 1)),
+  );
+}
+
+// Choose points that maximize the minimum distance to used IDs and to each
+// other. Each gap can hold a bounded number of points at a given spacing;
+// binary search finds the largest spacing with enough total capacity.
 export function selectUnusedMessageIds(
   maxMessageId: number,
   usedMessageIds: ReadonlySet<number>,
   requestedCount: number,
-  chooseRandomInt: (maxExclusive: number) => number = randomInt,
 ): number[] {
   if (!Number.isSafeInteger(maxMessageId) || maxMessageId <= 0) return [];
   if (!Number.isSafeInteger(requestedCount) || requestedCount <= 0) return [];
@@ -76,22 +183,24 @@ export function selectUnusedMessageIds(
   const usedSorted = Array.from(usedMessageIds)
     .filter((id) => Number.isSafeInteger(id) && id >= 1 && id <= maxMessageId)
     .sort((a, b) => a - b);
-  const remainingCount = maxMessageId - usedSorted.length;
-  const desiredCount = Math.min(requestedCount, remainingCount);
-  if (desiredCount <= 0) return [];
-
-  const selectedRanks = new Set<number>();
-  while (selectedRanks.size < desiredCount) {
-    const value = chooseRandomInt(remainingCount);
-    if (!Number.isSafeInteger(value) || value < 0 || value >= remainingCount) {
-      throw new Error("随机数生成器返回了范围外的值");
-    }
-    selectedRanks.add(value);
-  }
-
-  return Array.from(selectedRanks, (rank) =>
-    availableIdAtRank(rank, maxMessageId, usedSorted),
+  const pointCount = Math.min(
+    requestedCount,
+    maxMessageId - usedSorted.length,
   );
+  if (pointCount <= 0) return [];
+
+  const gaps = buildFreeGaps(maxMessageId, usedSorted);
+  const spacing = maximumSpacing(gaps, pointCount, maxMessageId);
+  const capacities = gaps.map((gap) => gapCapacity(gap, spacing));
+  const counts = allocateGapPoints(gaps, capacities, pointCount);
+
+  const selected: number[] = [];
+  for (const [index, gap] of gaps.entries()) {
+    selected.push(
+      ...placeGapPoints(gap, counts[index]!, spacing, maxMessageId),
+    );
+  }
+  return selected;
 }
 
 export class DigestService {
