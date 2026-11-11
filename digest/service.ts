@@ -25,153 +25,118 @@ function waitForRetry(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-type FreeGap = {
-  left: number | null;
-  right: number | null;
+type FreeRange = {
   start: number;
   end: number;
 };
 
-function buildFreeGaps(
+function buildFreeRanges(
   maxMessageId: number,
   usedSorted: number[],
-): FreeGap[] {
-  if (!usedSorted.length) {
-    return [{ left: null, right: null, start: 1, end: maxMessageId }];
+): FreeRange[] {
+  const ranges: FreeRange[] = [];
+  let next = 1;
+  for (const used of usedSorted) {
+    if (used > next) ranges.push({ start: next, end: used - 1 });
+    next = used + 1;
   }
-
-  const gaps: FreeGap[] = [];
-  const first = usedSorted[0]!;
-  if (first > 1) {
-    gaps.push({ left: null, right: first, start: 1, end: first - 1 });
+  if (next <= maxMessageId) {
+    ranges.push({ start: next, end: maxMessageId });
   }
-
-  for (let index = 0; index + 1 < usedSorted.length; index += 1) {
-    const left = usedSorted[index]!;
-    const right = usedSorted[index + 1]!;
-    if (right - left > 1) {
-      gaps.push({ left, right, start: left + 1, end: right - 1 });
-    }
-  }
-
-  const last = usedSorted[usedSorted.length - 1]!;
-  if (last < maxMessageId) {
-    gaps.push({ left: last, right: null, start: last + 1, end: maxMessageId });
-  }
-  return gaps;
+  return ranges;
 }
 
-function gapCapacity(gap: FreeGap, spacing: number): number {
-  const freeCount = gap.end - gap.start + 1;
-  if (gap.left === null && gap.right === null) {
-    return Math.floor((freeCount - 1) / spacing) + 1;
-  }
-  if (gap.left === null || gap.right === null) {
-    return Math.floor(freeCount / spacing);
-  }
-  return Math.max(0, Math.floor((freeCount + 1) / spacing) - 1);
-}
+type Band = {
+  low: number;
+  high: number;
+  pieces: FreeRange[];
+};
 
-function totalCapacity(
-  gaps: FreeGap[],
-  spacing: number,
-  pointCount: number,
-): number {
-  let total = 0;
-  for (const gap of gaps) {
-    total += gapCapacity(gap, spacing);
-    if (total >= pointCount) return total;
-  }
-  return total;
-}
-
-function maximumSpacing(
-  gaps: FreeGap[],
-  pointCount: number,
+// Split the channel into equal ID bands. Every band contributes at most one
+// sample, so a single digest always spans the whole channel evenly.
+function buildBands(
   maxMessageId: number,
-): number {
-  let low = 1;
-  let high = maxMessageId;
-  while (low < high) {
-    const middle = low + Math.ceil((high - low) / 2);
-    if (totalCapacity(gaps, middle, pointCount) >= pointCount) {
-      low = middle;
-    } else {
-      high = middle - 1;
+  bandCount: number,
+  ranges: FreeRange[],
+): Band[] {
+  const bands: Band[] = [];
+  let rangeIndex = 0;
+  for (let index = 0; index < bandCount; index += 1) {
+    const low = Math.floor((index * maxMessageId) / bandCount) + 1;
+    const high = Math.floor(((index + 1) * maxMessageId) / bandCount);
+    while (rangeIndex < ranges.length && ranges[rangeIndex]!.end < low) {
+      rangeIndex += 1;
+    }
+    const pieces: FreeRange[] = [];
+    for (
+      let scan = rangeIndex;
+      scan < ranges.length && ranges[scan]!.start <= high;
+      scan += 1
+    ) {
+      const start = Math.max(ranges[scan]!.start, low);
+      const end = Math.min(ranges[scan]!.end, high);
+      if (start <= end) pieces.push({ start, end });
+    }
+    bands.push({ low, high, pieces });
+  }
+  return bands;
+}
+
+// Take the midpoint of the widest free piece left in the band: it is the ID
+// farthest from the used IDs and earlier samples around it. Equal-width
+// pieces resolve toward the band center.
+function takeBandPoint(band: Band): number | null {
+  let bestIndex = -1;
+  let bestSpan = -1;
+  let bestCenterDistance = Number.POSITIVE_INFINITY;
+  const bandCenter = (band.low + band.high) / 2;
+  for (let index = 0; index < band.pieces.length; index += 1) {
+    const piece = band.pieces[index]!;
+    const span = piece.end - piece.start;
+    const centerDistance = Math.abs(
+      (piece.start + piece.end) / 2 - bandCenter,
+    );
+    if (
+      span > bestSpan ||
+      (span === bestSpan && centerDistance < bestCenterDistance)
+    ) {
+      bestSpan = span;
+      bestCenterDistance = centerDistance;
+      bestIndex = index;
     }
   }
-  return low;
+  if (bestIndex < 0) return null;
+
+  const piece = band.pieces[bestIndex]!;
+  const id = Math.floor((piece.start + piece.end) / 2);
+  const remaining: FreeRange[] = [];
+  if (piece.start < id) remaining.push({ start: piece.start, end: id - 1 });
+  if (id < piece.end) remaining.push({ start: id + 1, end: piece.end });
+  band.pieces.splice(bestIndex, 1, ...remaining);
+  return id;
 }
 
-// Break equal-width ties with a bit-reversal order so one batch spreads across
-// the channel instead of filling the first gaps.
-function spreadRank(index: number, count: number): number {
-  let bits = 0;
-  while (1 << bits < count) bits += 1;
-  let value = index;
-  let rank = 0;
-  for (let bit = 0; bit < bits; bit += 1) {
-    rank = (rank << 1) | (value & 1);
-    value >>= 1;
-  }
-  return rank;
-}
-
-function allocateGapPoints(
-  gaps: FreeGap[],
-  capacities: number[],
-  pointCount: number,
-): number[] {
-  const counts = new Array<number>(gaps.length).fill(0);
-  const ranks = gaps.map((_, index) => spreadRank(index, gaps.length));
-  const order = gaps
-    .map((_, index) => index)
-    .sort((a, b) => {
-      const freeA = gaps[a]!.end - gaps[a]!.start;
-      const freeB = gaps[b]!.end - gaps[b]!.start;
-      return freeB - freeA || ranks[a]! - ranks[b]!;
-    });
-
-  let remaining = pointCount;
-  while (remaining > 0) {
-    let added = false;
-    for (const index of order) {
-      if (remaining === 0) break;
-      if (counts[index]! < capacities[index]!) {
-        counts[index] = counts[index]! + 1;
-        remaining -= 1;
-        added = true;
+function widestBand(bands: Band[]): Band | null {
+  let best: Band | null = null;
+  let bestSpan = -1;
+  for (const band of bands) {
+    for (const piece of band.pieces) {
+      const span = piece.end - piece.start;
+      if (span > bestSpan) {
+        bestSpan = span;
+        best = band;
       }
     }
-    if (!added) throw new Error("无法分配摘要抽样序号");
   }
-  return counts;
+  return best;
 }
 
-function placeGapPoints(
-  gap: FreeGap,
-  count: number,
-  spacing: number,
-  maxMessageId: number,
-): number[] {
-  if (count === 0) return [];
-
-  const low = gap.left === null ? 1 : gap.left + spacing;
-  const high = gap.right === null ? maxMessageId : gap.right - spacing;
-  if (count === 1) {
-    return [low + Math.floor((high - low) / 2)];
-  }
-
-  const span = high - low;
-  return Array.from(
-    { length: count },
-    (_, index) => low + Math.floor((index * span) / (count - 1)),
-  );
-}
-
-// Choose points that maximize the minimum distance to used IDs and to each
-// other. Each gap can hold a bounded number of points at a given spacing;
-// binary search finds the largest spacing with enough total capacity.
+// Choose one unused ID per equal-width band, plus spare IDs for bands that
+// have nothing free left. Covering every band keeps the digest spread across
+// the whole channel; splitting the widest free piece keeps later days from
+// piling up next to earlier samples. Maximizing the minimum distance instead
+// says nothing about the largest gap, so whole digests drifted into whichever
+// region still had the widest holes, usually the newest messages.
 export function selectUnusedMessageIds(
   maxMessageId: number,
   usedMessageIds: ReadonlySet<number>,
@@ -183,24 +148,44 @@ export function selectUnusedMessageIds(
   const usedSorted = Array.from(usedMessageIds)
     .filter((id) => Number.isSafeInteger(id) && id >= 1 && id <= maxMessageId)
     .sort((a, b) => a - b);
-  const pointCount = Math.min(
-    requestedCount,
-    maxMessageId - usedSorted.length,
-  );
-  if (pointCount <= 0) return [];
-
-  const gaps = buildFreeGaps(maxMessageId, usedSorted);
-  const spacing = maximumSpacing(gaps, pointCount, maxMessageId);
-  const capacities = gaps.map((gap) => gapCapacity(gap, spacing));
-  const counts = allocateGapPoints(gaps, capacities, pointCount);
-
-  const selected: number[] = [];
-  for (const [index, gap] of gaps.entries()) {
-    selected.push(
-      ...placeGapPoints(gap, counts[index]!, spacing, maxMessageId),
-    );
+  const freeCount = maxMessageId - usedSorted.length;
+  if (freeCount <= 0) return [];
+  if (freeCount <= requestedCount) {
+    const all: number[] = [];
+    let next = 1;
+    for (const used of usedSorted) {
+      for (let id = next; id < used; id += 1) all.push(id);
+      next = used + 1;
+    }
+    for (let id = next; id <= maxMessageId; id += 1) all.push(id);
+    return all;
   }
-  return selected;
+
+  const bands = buildBands(
+    maxMessageId,
+    requestedCount,
+    buildFreeRanges(maxMessageId, usedSorted),
+  );
+  const selected: number[] = [];
+  let remaining = requestedCount;
+  for (const band of bands) {
+    if (!band.pieces.length) continue;
+    const id = takeBandPoint(band);
+    if (id === null) continue;
+    selected.push(id);
+    remaining -= 1;
+  }
+
+  while (remaining > 0) {
+    const band = widestBand(bands);
+    if (!band) break;
+    const id = takeBandPoint(band);
+    if (id === null) break;
+    selected.push(id);
+    remaining -= 1;
+  }
+
+  return selected.sort((a, b) => a - b);
 }
 
 export class DigestService {

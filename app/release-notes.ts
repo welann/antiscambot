@@ -3,7 +3,7 @@ type ReleaseNote = { version: string; summary: string };
 const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: "2026-11-11",
-    summary: "新增独立格式审核：整条消息恰好为 @Bot用户名 加两段内容时自动删除；每日摘要改为在未抽样空档中按最大 ID 间距抽取",
+    summary: "新增独立格式审核：整条消息恰好为 @Bot用户名 加两段内容时自动删除；每日摘要改为按消息 ID 等分区间抽取，每个区间取最远离历史抽样的空位",
   },
   {
     version: "2026-10-08",

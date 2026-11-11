@@ -13,7 +13,7 @@
 | `app/permissions.ts`、`channels.ts` | 前者决定用户权限，后者解析频道并查询 Bot 的管理员、发布和编辑权限 |
 | `moderation/rules.ts`、`handler.ts` | 规则是纯函数；handler 排除自身消息、非群消息和命令，再匹配并调用 `message-handling.ts` 删除通知流程 |
 | `storage/` | `KeywordStore` / `AdminStore` 管理内存快照与 TXT；`text-file.ts` 提供串行队列和同目录临时文件替换 |
-| `digest/` | `types.ts` 定义契约，`repository.ts` 管理 SQL/迁移，`service.ts` 调用仓储和注入的发送器并以最大最小 ID 间距选择抽样，`formatting.ts` 处理链接及 HTML |
+| `digest/` | `types.ts` 定义契约，`repository.ts` 管理 SQL/迁移，`service.ts` 调用仓储和注入的发送器并按消息 ID 等分区间选择抽样，`formatting.ts` 处理链接及 HTML |
 | `calendar.ts` | 保留日历仓储、发送状态机及渲染适配；只在需要发图时动态加载独立 JS 组件 `calendar-studio/renderer.js` |
 | `shared/time.ts` | 无业务状态的时区与每日补执行函数，供摘要和日历共用 |
 
@@ -48,6 +48,6 @@ SIGINT/SIGTERM 请求停止轮询；`finally` 移除信号监听、销毁 cron�
 
 - 文件队列只对同一 store 实例有效，没有跨实例/跨进程锁或文件变更监听；同一份数据应由单个 Bot 进程管理，不能靠多建 store 实例实现并发安全。
 - 摘要和日历使用同一数据库文件，但各自持有独立 `DatabaseSync` 连接，未统一为一个工作单元，也没有跨模块事务。SQLite 操作仍是同步的。
-- 摘要只抽取消息 ID，不验证历史内容是否存在；`selectUnusedMessageIds()` 是确定性的 maximin 选择，只优化 ID 间距，不保证内容主题多样。发送前预留能防止重复抽样，但网络结果不明时的发送重试不保证 Telegram 端恰好一次。启动补摘要只识别固定每日 `分 时 * * *`，不补更早日期。
+- 摘要只抽取消息 ID，不验证历史内容是否存在；`selectUnusedMessageIds()` 是确定性的等分区间抽样，只保证消息 ID 均匀覆盖，不保证内容主题多样。发送前预留能防止重复抽样，但网络结果不明时的发送重试不保证 Telegram 端恰好一次。启动补摘要只识别固定每日 `分 时 * * *`，不补更早日期。
 - `pnpm run build` 用 `tsconfig.build.json` 输出生产代码到 `dist/`，`pnpm start` 运行 `dist/bot.js`。Docker 复制整个运行模块树，并在同级保留 `calendar-studio` 的 JS 与资源；渲染组件未重写，浏览器集成脚本也不属于默认 `pnpm test`。
 - TXT 格式仍按行解析，未引入多行关键词转义；存储没有新增远程备份。权限、持久化目录、Chromium 和环境变量配置见 [README](../Readme.md)。
